@@ -1,0 +1,88 @@
+name: Build and Package Browser Extensions
+
+on:
+  push:
+    # Activé pour tous les pushes, sur toutes les branches
+  
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: |
+        # Installer les dépendances communes si nécessaire
+        npm ci
+        
+        # Installer les dépendances spécifiques pour Firefox
+        if [ -f "Firefox/package.json" ]; then
+          cd Firefox
+          npm ci
+          cd ..
+        fi
+        
+        # Installer les dépendances spécifiques pour Chromium
+        if [ -f "chromium/package.json" ]; then
+          cd chromium
+          npm ci
+          cd ..
+        fi
+    
+    # Construction de l'extension Firefox
+    - name: Build Firefox Extension
+      run: |
+        cd Firefox
+        npm run build || echo "Using directory structure as is"
+        mkdir -p ../dist
+    
+    # Construction de l'extension Chromium
+    - name: Build Chromium Extension
+      run: |
+        cd chromium
+        npm run build || echo "Using directory structure as is"
+        mkdir -p ../dist
+    
+    # Packaging de l'extension Firefox
+    - name: Package Firefox Extension
+      run: |
+        mkdir -p dist/firefox
+        if [ -d "Firefox/build" ]; then
+          cp -r Firefox/build/* dist/firefox/
+        else
+          cp -r Firefox/* dist/firefox/
+        fi
+        cd dist/firefox
+        zip -r ../firefox-extension.zip *
+    
+    # Packaging de l'extension Chromium
+    - name: Package Chromium Extension
+      run: |
+        mkdir -p dist/chromium
+        if [ -d "chromium/build" ]; then
+          cp -r chromium/build/* dist/chromium/
+        else
+          cp -r chromium/* dist/chromium/
+        fi
+        cd dist/chromium
+        zip -r ../chromium-extension.zip *
+    
+    # Téléchargement des extensions comme artéfacts - Utilisation de la v4
+    - name: Upload Chrome Extension
+      uses: actions/upload-artifact@v4
+      with:
+        name: chromium-extension
+        path: dist/chromium-extension.zip
+    
+    - name: Upload Firefox Extension
+      uses: actions/upload-artifact@v4
+      with:
+        name: firefox-extension
+        path: dist/firefox-extension.zip

@@ -38,10 +38,15 @@ fn greet(name: &str) -> String {
 }
 
 fn normalize_http_url(raw: &str) -> Result<reqwest::Url, String> {
-    let parsed = reqwest::Url::parse(raw).map_err(|e| format!("Invalid URL: {e}"))?;
+    let mut url_str = raw.to_string();
+    #[cfg(target_os = "windows")]
+    if url_str.starts_with("tauri://localhost") {
+        url_str = url_str.replace("tauri://localhost", "http://tauri.localhost");
+    }
+    let parsed = reqwest::Url::parse(&url_str).map_err(|e| format!("Invalid URL: {e}"))?;
     let scheme = parsed.scheme();
-    if scheme != "http" && scheme != "https" {
-        return Err("Only http/https allowed".into());
+    if scheme != "http" && scheme != "https" && scheme != "tauri" {
+        return Err("Only http/https/tauri allowed".into());
     }
     Ok(parsed)
 }
@@ -96,10 +101,10 @@ fn apply_main_window_state(
 }
 
 #[tauri::command]
-fn set_main_menu_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
+fn set_window_menu_visible(app: tauri::AppHandle, label: String, visible: bool) -> Result<(), String> {
     let window = app
-        .get_webview_window("main")
-        .ok_or("Main window not found")?;
+        .get_webview_window(&label)
+        .ok_or_else(|| format!("Window not found: {label}"))?;
 
     if visible {
         window
@@ -146,6 +151,48 @@ fn sync_cached_home_url(url: String) -> Result<(), String> {
         .map_err(|_| "cached home url lock poisoned".to_string())?;
     *guard = Some(normalized.to_string());
     Ok(())
+}
+
+#[tauri::command]
+fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(settings_window) = app.get_webview_window("settings") {
+        let _ = settings_window.show();
+        let _ = settings_window.set_focus();
+        let _ = settings_window.eval(
+            r#"window.dispatchEvent(new Event('kiosk-open-settings'));"#,
+        );
+    } else {
+        if let Ok(settings_window) = WebviewWindowBuilder::new(
+            &app,
+            "settings",
+            WebviewUrl::App("index.html?mode=settings#open-settings".into()),
+        )
+        .title("設定")
+        .inner_size(1200.0, 780.0)
+        .resizable(true)
+        .initialization_script(
+            r#"
+window.__TAURI_OPEN_SETTINGS__ = true;
+"#,
+        )
+        .build() {
+            let _ = settings_window.hide_menu();
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn close_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.close();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn force_exit_app(app: tauri::AppHandle) {
+    app.exit(0);
 }
 
 fn inject_nikflix_full(window: &tauri::Webview) {
@@ -241,12 +288,16 @@ fn inject_nikflix_full(window: &tauri::Webview) {
 
 const ADBLOCK_SCRIPT: &str = r#"
 (function() {
+    if (window.__lnuAdBlockBound) return;
+    window.__lnuAdBlockBound = true;
+
     const adDomains = [
         'doubleclick.net', 'googleadservices.com', 'googlesyndication.com',
         'taboola.com', 'outbrain.com', 'adnxs.com', 'adtech.de',
         'advertising.com', 'quantserve.com', 'scorecardresearch.com',
         'zedo.com', 'criteo.com', 'popads.net', 'adroll.com',
-        'amazon-adsystem.com', 'adnxs.com', 'casalemedia.com', 'rubiconproject.com'
+        'amazon-adsystem.com', 'adnxs.com', 'casalemedia.com', 'rubiconproject.com',
+        'adsystem.com', 'adservice.google', 'pagead2.googlesyndication.com'
     ];
     
     const originalFetch = window.fetch;
@@ -258,7 +309,7 @@ const ADBLOCK_SCRIPT: &str = r#"
 
         if (urlStr && adDomains.some(domain => urlStr.includes(domain))) {
             console.log('Blocked fetch to ad domain:', urlStr);
-            return Promise.reject(new Error('Blocked by adblock'));
+            return Promise.resolve(new Response('', { status: 200, statusText: 'OK' }));
         }
         return originalFetch.apply(this, arguments);
     };
@@ -267,13 +318,56 @@ const ADBLOCK_SCRIPT: &str = r#"
     XMLHttpRequest.prototype.open = function(method, url) {
         if (typeof url === 'string' && adDomains.some(domain => url.includes(domain))) {
             console.log('Blocked XHR to ad domain:', url);
-            // We can't easily block it here without affecting the state machine, 
-            // but we can change the URL to something invalid or just abort later.
-            // For now, let's just log and let it fail or use a more robust way.
+            this.__blockedByAdblock = true;
+            return;
         }
         return originalOpen.apply(this, arguments);
     };
-    console.info("[AdBlock] Basic adblocker initialized");
+
+    const originalSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function() {
+        if (this.__blockedByAdblock) {
+            Object.defineProperty(this, 'readyState', { value: 4, writable: false });
+            Object.defineProperty(this, 'status', { value: 200, writable: false });
+            Object.defineProperty(this, 'responseText', { value: '', writable: false });
+            if (typeof this.onreadystatechange === 'function') {
+                setTimeout(() => this.onreadystatechange(new Event('readystatechange')), 10);
+            }
+            if (typeof this.onload === 'function') {
+                setTimeout(() => this.onload(new ProgressEvent('load')), 15);
+            }
+            return;
+        }
+        return originalSend.apply(this, arguments);
+    };
+
+    const observer = new MutationObserver(mutations => {
+        mutations.forEach(mutation => {
+            mutation.addedNodes.forEach(node => {
+                if (node.tagName === 'SCRIPT' && node.src && adDomains.some(domain => node.src.includes(domain))) {
+                    node.type = 'javascript/blocked';
+                    node.src = '';
+                } else if (node.tagName === 'IFRAME' && node.src && adDomains.some(domain => node.src.includes(domain))) {
+                    node.src = 'about:blank';
+                    node.style.display = 'none';
+                }
+            });
+        });
+    });
+    observer.observe(document.documentElement || document, { childList: true, subtree: true });
+
+    const blockSelectors = [
+        'div[id^="ad-"]', 'div[class*="adsense"]', 'ins.adsbygoogle',
+        'div[data-ad-unit]', 'div[class*="ad-unit"]', 'iframe[src*="ads"]'
+    ];
+    const hideAds = () => {
+        blockSelectors.forEach(sel => {
+            document.querySelectorAll(sel).forEach(el => { el.style.display = 'none'; });
+        });
+    };
+    setInterval(hideAds, 2000);
+    hideAds();
+    console.info("[AdBlock] Enhanced adblocker initialized");
 })();
 "#;
 
@@ -282,8 +376,11 @@ const MENU_AUTO_HIDE_SCRIPT: &str = r#"
     if (window.__lnuMenuAutoHideBound) return;
     window.__lnuMenuAutoHideBound = true;
 
+    const winApi = window.__TAURI__?.window;
     const invoke = window.__TAURI__?.core?.invoke;
-    if (!invoke) return;
+    if (!invoke || !winApi?.getCurrentWindow) return;
+
+    const label = winApi.getCurrentWindow()?.label || "main";
 
     const EDGE_PX = 4;
     const HIDE_DELAY_MS = 1800;
@@ -294,7 +391,7 @@ const MENU_AUTO_HIDE_SCRIPT: &str = r#"
         if (visible === next) return;
         visible = next;
         try {
-            await invoke("set_main_menu_visible", { visible: next });
+            await invoke("set_window_menu_visible", { label, visible: next });
         } catch {
             // ignore
         }
@@ -427,6 +524,134 @@ const CUSTOM_CONTEXT_MENU_SCRIPT: &str = r#"
 })();
 "#;
 
+const EXIT_HINT_SCRIPT: &str = r#"
+(() => {
+    if (window.__lnuExitHintBound) return;
+    window.__lnuExitHintBound = true;
+
+    const STYLE_ID = "lnu-kiosk-exit-hint-style";
+    if (!document.getElementById(STYLE_ID)) {
+        const style = document.createElement("style");
+        style.id = STYLE_ID;
+        style.textContent = `
+            #lnu-exit-hint {
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: rgba(15, 23, 42, 0.95);
+                backdrop-filter: blur(12px);
+                padding: 10px 18px;
+                border-radius: 14px;
+                border: 1px solid rgba(148, 163, 184, 0.35);
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                opacity: 0;
+                transition: opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1), transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+                transform: translateY(-10px);
+                pointer-events: none;
+                z-index: 2147483646;
+                color: #f0f6fc;
+                font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+                user-select: none;
+                line-height: 1.4;
+            }
+            #lnu-exit-hint.is-visible {
+                opacity: 1;
+                transform: translateY(0);
+                pointer-events: auto;
+            }
+            #lnu-exit-hint .hint-label {
+                font-size: 14px;
+                font-weight: 500;
+                color: #94a3b8;
+                white-space: nowrap;
+            }
+            #lnu-exit-hint .hint-label strong {
+                color: #f0f6fc;
+                background: rgba(255, 255, 255, 0.1);
+                padding: 1px 4px;
+                border-radius: 4px;
+            }
+            #lnu-exit-hint .hint-btn {
+                background: rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(148, 163, 184, 0.25);
+                border-radius: 8px;
+                color: #f8fafc;
+                padding: 7px 14px;
+                font-size: 13px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.2s;
+                outline: none;
+            }
+            #lnu-exit-hint .hint-btn:hover {
+                background: rgba(255, 255, 255, 0.15);
+                border-color: rgba(148, 163, 184, 0.4);
+            }
+            #lnu-exit-hint .hint-btn--primary {
+                background: #008cff;
+                border-color: #008cff;
+                color: white;
+            }
+            #lnu-exit-hint .hint-btn--primary:hover {
+                background: #007bdd;
+                border-color: #007bdd;
+            }
+        `;
+        (document.head || document.documentElement).appendChild(style);
+    }
+
+    let hint = document.getElementById("lnu-exit-hint");
+    if (!hint) {
+        hint = document.createElement("div");
+        hint.id = "lnu-exit-hint";
+        hint.innerHTML = `
+            <span class="hint-label">Press <strong>Ctrl+Alt+Q</strong> to exit.</span>
+            <button class="hint-btn hint-btn--primary" id="lnu-hint-settings">Settings</button>
+            <button class="hint-btn" id="lnu-hint-home">Home</button>
+        `;
+        (document.body || document.documentElement).appendChild(hint);
+
+        const invoke = window.__TAURI__?.core?.invoke;
+
+        document.getElementById("lnu-hint-settings").onclick = () => {
+            if (invoke) invoke("open_settings_window");
+            hint.classList.remove("is-visible");
+        };
+        document.getElementById("lnu-hint-home").onclick = () => {
+            if (invoke) invoke("navigate_main_home", { url: "tauri://localhost/index.html#open-home" });
+            hint.classList.remove("is-visible");
+        };
+    }
+
+    let timer;
+    const showHint = () => {
+        hint.classList.add("is-visible");
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+            hint.classList.remove("is-visible");
+        }, 5000);
+    };
+
+    window.addEventListener("keydown", (e) => {
+        const k = String(e.key || "").toLowerCase();
+        if (k === "escape") {
+            showHint();
+        }
+        // Also handle the exit combo globally
+        const exitCombo = (e.ctrlKey || e.metaKey) && e.altKey && k === "q";
+        if (exitCombo) {
+            const invoke = window.__TAURI__?.core?.invoke;
+            if (invoke) invoke("force_exit_app");
+        }
+    });
+
+    window.addEventListener("kiosk-show-toolbar", showHint);
+})();
+"#;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -451,28 +676,7 @@ pub fn run() {
         .on_menu_event(|app, event| {
             match event.id().as_ref() {
                 "open_settings" => {
-                    if let Some(settings_window) = app.get_webview_window("settings") {
-                        let _ = settings_window.show();
-                        let _ = settings_window.set_focus();
-                        let _ = settings_window.eval(
-                            r#"location.href = 'tauri://localhost/index.html?mode=settings#open-settings';"#,
-                        );
-                    } else {
-                        let _ = WebviewWindowBuilder::new(
-                            app,
-                            "settings",
-                            WebviewUrl::App("index.html?mode=settings#open-settings".into()),
-                        )
-                        .title("設定")
-                        .inner_size(1200.0, 780.0)
-                        .resizable(true)
-                        .initialization_script(
-                            r#"
-window.__TAURI_OPEN_SETTINGS__ = true;
-"#,
-                        )
-                        .build();
-                    }
+                    let _ = open_settings_window(app.clone());
                 }
                 "go_home" => {
                     if let Some(window) = app.get_webview_window("main") {
@@ -482,7 +686,7 @@ window.__TAURI_OPEN_SETTINGS__ = true;
                             .and_then(|guard| guard.clone())
                             .unwrap_or_else(|| "tauri://localhost/index.html#open-home".to_string());
 
-                        if let Ok(parsed) = reqwest::Url::parse(&home_url) {
+                        if let Ok(parsed) = normalize_http_url(&home_url) {
                             let _ = window.navigate(parsed);
                         }
                     }
@@ -493,7 +697,11 @@ window.__TAURI_OPEN_SETTINGS__ = true;
         .on_page_load(|window, payload| {
             if window.label() == "main" {
                 let _ = window.eval(MENU_AUTO_HIDE_SCRIPT);
+            }
+
+            if window.label() == "main" {
                 let _ = window.eval(CUSTOM_CONTEXT_MENU_SCRIPT);
+                let _ = window.eval(EXIT_HINT_SCRIPT);
             }
 
             // Inject AdBlock on every page
@@ -513,7 +721,10 @@ window.__TAURI_OPEN_SETTINGS__ = true;
             get_main_window_state,
             navigate_main_home,
             sync_cached_home_url,
-            set_main_menu_visible
+            set_window_menu_visible,
+            open_settings_window,
+            close_main_window,
+            force_exit_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

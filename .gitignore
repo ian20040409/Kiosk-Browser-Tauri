@@ -34,7 +34,7 @@ src-tauri/gen/schemas/
 
 electron-kiosk-app-main
 electron-kiosk-app-main.zip
-Nikflix-master
+#Nikflix-master (Do NOT ignore, required by Rust for build)
 Nikflix-master.zip
 uBlock-master
 uBlock-master.zip

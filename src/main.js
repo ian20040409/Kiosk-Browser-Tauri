@@ -2,8 +2,6 @@ const STORAGE_KEY = "tauri_kiosk_settings_v2";
 const HISTORY_LIMIT = 3;
 const REMOTE_CONFIG_TIMEOUT_MS = 8000;
 const PASSWORD_ITERATIONS = 120000;
-const MENU_EDGE_TRIGGER_PX = 4;
-const MENU_AUTO_HIDE_DELAY_MS = 1800;
 
 const tauriWin = window.__TAURI__?.window;
 const invoke = window.__TAURI__?.core?.invoke;
@@ -16,8 +14,6 @@ const state = {
   oskShift: false,
   oskMinimized: false,
   activeInput: null,
-  menuVisible: true,
-  menuHideTimer: 0,
   settings: {
     homeUrl: "https://linyounttu.dpdns.org",
     userAgent: "",
@@ -37,9 +33,6 @@ const el = {
   openDirectBtn: document.querySelector("#open-direct-btn"),
   openNetflixBtn: document.querySelector("#open-netflix-btn"),
   closeWindowBtn: document.querySelector("#close-window-btn"),
-  exitHint: document.querySelector(".exit-hint"),
-  btnSettings: document.querySelector(".exit-hint__settings"),
-  btnReset: document.querySelector(".exit-hint__reset"),
   overlay: document.querySelector(".settings-overlay"),
   authPanel: document.querySelector(".settings-auth-panel"),
   authInput: document.querySelector("#settings-auth-input"),
@@ -186,7 +179,6 @@ async function openDirectHome() {
 
 function resetFrame() {
   void openDirectHome();
-  showExitHint();
 }
 
 async function syncCachedHomeUrl() {
@@ -246,50 +238,6 @@ function updateAlwaysOnTopAvailability() {
     : "";
 }
 
-async function setMainMenuVisible(visible) {
-  if (!invoke || windowLabel !== "main") return;
-  if (state.menuVisible === visible) return;
-  state.menuVisible = visible;
-  try {
-    await invoke("set_main_menu_visible", { visible });
-  } catch {
-    // ignore menu visibility errors
-  }
-}
-
-function scheduleMenuAutoHide() {
-  if (windowLabel !== "main") return;
-  window.clearTimeout(state.menuHideTimer);
-  state.menuHideTimer = window.setTimeout(() => {
-    void setMainMenuVisible(false);
-  }, MENU_AUTO_HIDE_DELAY_MS);
-}
-
-function bindMenuAutoHide() {
-  if (!invoke || windowLabel !== "main") return;
-
-  void setMainMenuVisible(false);
-
-  window.addEventListener("mousemove", (e) => {
-    if (e.clientY <= MENU_EDGE_TRIGGER_PX) {
-      void setMainMenuVisible(true);
-      scheduleMenuAutoHide();
-    }
-  });
-
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "Alt" || e.key === "F10") {
-      void setMainMenuVisible(true);
-      scheduleMenuAutoHide();
-    }
-  });
-
-  window.addEventListener("blur", () => {
-    window.clearTimeout(state.menuHideTimer);
-    void setMainMenuVisible(false);
-  });
-}
-
 function syncUiFromSettings() {
   const { protocol, body } = splitProtocol(state.settings.homeUrl);
   el.protocol.value = protocol;
@@ -328,12 +276,6 @@ function collectFormSettings() {
   if (state.settings.userAgent) pushHistory("userAgentHistory", state.settings.userAgent);
 }
 
-function showExitHint() {
-  el.exitHint.classList.add("is-visible");
-  window.clearTimeout(showExitHint.timer);
-  showExitHint.timer = window.setTimeout(() => el.exitHint.classList.remove("is-visible"), 4000);
-}
-
 function openSettings() {
   const locked = state.settings.hasPassword && !state.unlocked;
   el.overlay.classList.add("is-visible");
@@ -357,6 +299,10 @@ function handleHashAction() {
 }
 
 function closeSettings() {
+  if (windowLabel === "settings" && appWindow?.close) {
+    appWindow.close().catch(console.error);
+    return;
+  }
   state.unlocked = false;
   el.overlay.classList.remove("is-visible", "is-auth");
   el.overlay.setAttribute("aria-hidden", "true");
@@ -589,6 +535,14 @@ async function toggleFullscreen() {
 }
 
 async function forceQuit() {
+  if (invoke) {
+    try {
+      await invoke("force_exit_app");
+      return;
+    } catch {
+      // fallback below
+    }
+  }
   if (windowLabel === "settings" && appWindow?.close) {
     await appWindow.close();
     return;
@@ -615,8 +569,6 @@ function bindEvents() {
     void openDirectHome();
   });
 
-  el.btnSettings.addEventListener("click", openSettings);
-  el.btnReset.addEventListener("click", resetFrame);
   el.openDirectBtn.addEventListener("click", () => {
     void openDirectHome();
   });
@@ -674,9 +626,6 @@ function bindEvents() {
       await forceQuit();
       return;
     }
-    if (key === "escape") {
-      showExitHint();
-    }
   });
 }
 
@@ -685,7 +634,6 @@ async function boot() {
   await syncCachedHomeUrl();
   syncUiFromSettings();
   bindEvents();
-  bindMenuAutoHide();
   bindOskButtons();
   bindFocusForOsk();
   applyOskEnabledState();
