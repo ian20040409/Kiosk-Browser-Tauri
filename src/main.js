@@ -1,54 +1,70 @@
-const { invoke } = window.__TAURI__.core;
-
-let greetInputEl;
-let greetMsgEl;
-let appTitleEl;
-let homeUrlLabelEl;
-
-const DEFAULT_CONFIG_ENDPOINT = "https://worker.linyounttu.dpdns.org/";
-const STORAGE_KEY = "hi_tauri_hidden_settings_v1";
-const REMOTE_CONFIG_TIMEOUT_MS = 8000;
+const STORAGE_KEY = "tauri_kiosk_settings_v2";
 const HISTORY_LIMIT = 3;
+const REMOTE_CONFIG_TIMEOUT_MS = 8000;
+const PASSWORD_ITERATIONS = 120000;
+
+const tauriWin = window.__TAURI__?.window;
+const invoke = window.__TAURI__?.core?.invoke;
+const appWindow = tauriWin?.getCurrentWindow ? tauriWin.getCurrentWindow() : null;
+const windowLabel = appWindow?.label || "main";
 
 const state = {
-  tapCount: 0,
-  tapResetTimer: null,
+  unlocked: false,
+  oskEnabled: true,
+  oskShift: false,
+  oskMinimized: false,
+  activeInput: null,
   settings: {
-    version: 1,
-    home_url: "https://linyounttu.dpdns.org",
-    user_agent: "MusicAI/1.0 (lnu)",
-    show_share_options: true,
-    external_app_url: "unitymusicapp1007://",
-    config_endpoint: DEFAULT_CONFIG_ENDPOINT,
-    config_endpoint_history: [],
-    home_url_history: [],
-    user_agent_history: [],
+    homeUrl: "https://linyounttu.dpdns.org",
+    userAgent: "",
+    remoteConfigUrl: "https://worker.linyounttu.dpdns.org/",
+    alwaysOnTop: true,
+    fullscreen: true,
+    oskEnabled: true,
+    hasPassword: false,
+    passwordHash: "",
+    passwordSalt: "",
+    homeUrlHistory: [],
+    userAgentHistory: [],
   },
 };
 
-async function greet() {
-  // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-  greetMsgEl.textContent = await invoke("greet", { name: greetInputEl.value });
-}
+const el = {
+  openDirectBtn: document.querySelector("#open-direct-btn"),
+  exitHint: document.querySelector(".exit-hint"),
+  btnSettings: document.querySelector(".exit-hint__settings"),
+  btnReset: document.querySelector(".exit-hint__reset"),
+  overlay: document.querySelector(".settings-overlay"),
+  authPanel: document.querySelector(".settings-auth-panel"),
+  authInput: document.querySelector("#settings-auth-input"),
+  authErr: document.querySelector("#settings-auth-error"),
+  authSubmit: document.querySelector("#settings-auth-submit"),
+  authCancel: document.querySelector("#settings-auth-cancel"),
+  protocol: document.querySelector("#settings-url-protocol"),
+  homeInput: document.querySelector("#settings-url-input"),
+  userAgentInput: document.querySelector("#settings-user-agent"),
+  remoteInput: document.querySelector("#settings-remote-config-url"),
+  remoteBtn: document.querySelector("#settings-remote-fetch"),
+  remoteStatus: document.querySelector("#remote-config-status"),
+  homeHistory: document.querySelector("#home-history-chips"),
+  uaHistory: document.querySelector("#user-agent-history-chips"),
+  alwaysOnTop: document.querySelector("#always-on-top"),
+  oskEnabled: document.querySelector("#osk-enabled"),
+  fsToggle: document.querySelector("#settings-fs-toggle"),
+  fsToggleLabel: document.querySelector(".settings-btn__label--fs"),
+  pwdCurrent: document.querySelector("#settings-password-current"),
+  pwdNew: document.querySelector("#settings-password-new"),
+  pwdConfirm: document.querySelector("#settings-password-confirm"),
+  pwdStatus: document.querySelector("#settings-password-status"),
+  pwdUpdate: document.querySelector("#settings-update-password"),
+  saveBtn: document.querySelector("#settings-save"),
+  cancelBtn: document.querySelector("#settings-cancel"),
+  forceExit: document.querySelector("#settings-force-exit"),
+  oskOverlay: document.querySelector(".osk-overlay"),
+  osk: document.querySelector(".osk"),
+};
 
-function setSettingsMessage(message, isError = false) {
-  const el = document.querySelector("#settings-msg");
-  el.textContent = message;
-  el.style.color = isError ? "#d9534f" : "inherit";
-}
-
-function normalizeHttpUrl(raw) {
-  if (!raw || typeof raw !== "string") {
-    throw new Error("URL 必填");
-  }
-  const url = new URL(raw.trim());
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("僅允許 http/https");
-  }
-  return url.toString();
-}
-
-function sanitizeHistory(list, limit = HISTORY_LIMIT) {
+function sanitizeHistory(list) {
   if (!Array.isArray(list)) return [];
   const seen = new Set();
   const out = [];
@@ -58,221 +74,520 @@ function sanitizeHistory(list, limit = HISTORY_LIMIT) {
     if (!trimmed || seen.has(trimmed)) continue;
     seen.add(trimmed);
     out.push(trimmed);
-    if (out.length >= limit) break;
+    if (out.length >= HISTORY_LIMIT) break;
   }
   return out;
 }
 
-function pushHistory(key, value, limit = HISTORY_LIMIT) {
-  const current = sanitizeHistory(state.settings[key], limit);
-  const trimmed = typeof value === "string" ? value.trim() : "";
-  if (!trimmed) {
-    state.settings[key] = current;
+function pushHistory(targetKey, value) {
+  const current = sanitizeHistory(state.settings[targetKey]);
+  const v = (value || "").trim();
+  if (!v) {
+    state.settings[targetKey] = current;
     return;
   }
-  state.settings[key] = [trimmed, ...current.filter((v) => v !== trimmed)].slice(0, limit);
+  state.settings[targetKey] = [v, ...current.filter((x) => x !== v)].slice(0, HISTORY_LIMIT);
 }
 
-function syncSettingsToInputs() {
-  document.querySelector("#config-endpoint-input").value =
-    state.settings.config_endpoint || DEFAULT_CONFIG_ENDPOINT;
-  document.querySelector("#home-url-input").value = state.settings.home_url || "";
-  document.querySelector("#user-agent-input").value = state.settings.user_agent || "";
-  document.querySelector("#external-app-url-input").value =
-    state.settings.external_app_url || "";
-  document.querySelector("#show-share-options-input").checked = Boolean(
-    state.settings.show_share_options
-  );
-
-  document.querySelector("#config-preview").textContent = JSON.stringify(
-    state.settings,
-    null,
-    2
-  );
-  homeUrlLabelEl.textContent = `Home URL: ${state.settings.home_url || "(not set)"}`;
+function normalizeHttpUrl(raw) {
+  if (!raw || typeof raw !== "string") throw new Error("URL is required");
+  const u = new URL(raw.trim());
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    throw new Error("Only http/https allowed");
+  }
+  return u.toString();
 }
 
-function readSettingsFromInputs() {
-  const endpointInput = document.querySelector("#config-endpoint-input").value.trim();
-  state.settings.config_endpoint = endpointInput || DEFAULT_CONFIG_ENDPOINT;
-  state.settings.home_url = document.querySelector("#home-url-input").value.trim();
-  state.settings.user_agent = document.querySelector("#user-agent-input").value.trim();
-  state.settings.external_app_url = document
-    .querySelector("#external-app-url-input")
-    .value.trim();
-  state.settings.show_share_options = document.querySelector(
-    "#show-share-options-input"
-  ).checked;
-
-  if (endpointInput) pushHistory("config_endpoint_history", endpointInput);
-  if (state.settings.home_url) pushHistory("home_url_history", state.settings.home_url);
-  if (state.settings.user_agent) pushHistory("user_agent_history", state.settings.user_agent);
+function splitProtocol(urlValue) {
+  const value = (urlValue || "").trim();
+  if (value.startsWith("http://")) return { protocol: "http://", body: value.slice(7) };
+  if (value.startsWith("https://")) return { protocol: "https://", body: value.slice(8) };
+  return { protocol: "https://", body: value };
 }
 
-function persistSettings() {
+function saveSettings() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state.settings));
 }
 
-function loadPersistedSettings() {
+function loadSettings() {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (!raw) return;
-
   try {
     const parsed = JSON.parse(raw);
     state.settings = { ...state.settings, ...parsed };
-    state.settings.config_endpoint_history = sanitizeHistory(
-      state.settings.config_endpoint_history
-    );
-    state.settings.home_url_history = sanitizeHistory(state.settings.home_url_history);
-    state.settings.user_agent_history = sanitizeHistory(state.settings.user_agent_history);
+    state.settings.homeUrlHistory = sanitizeHistory(state.settings.homeUrlHistory);
+    state.settings.userAgentHistory = sanitizeHistory(state.settings.userAgentHistory);
   } catch {
-    setSettingsMessage("儲存設定損壞，已略過。", true);
+    // ignore
   }
 }
 
-function openSettingsPanel() {
-  document.querySelector("#settings-panel").classList.add("open");
-  document.querySelector("#settings-panel").setAttribute("aria-hidden", "false");
+function setRemoteStatus(msg, type = "") {
+  el.remoteStatus.textContent = msg || "";
+  el.remoteStatus.classList.remove("is-error", "is-success");
+  if (type) el.remoteStatus.classList.add(type);
 }
 
-function closeSettingsPanel() {
-  document.querySelector("#settings-panel").classList.remove("open");
-  document.querySelector("#settings-panel").setAttribute("aria-hidden", "true");
+function setPasswordStatus(msg, type = "") {
+  el.pwdStatus.textContent = msg || "";
+  el.pwdStatus.classList.remove("is-error", "is-success");
+  if (type) el.pwdStatus.classList.add(type);
 }
 
-async function fetchRemoteConfig({ silent = false } = {}) {
-  readSettingsFromInputs();
-  const endpoint = state.settings.config_endpoint || DEFAULT_CONFIG_ENDPOINT;
-  if (!silent) setSettingsMessage("抓取中...");
+function renderHistory(container, list, onSelect) {
+  container.innerHTML = "";
+  const parent = container.closest(".settings-history");
+  const items = sanitizeHistory(list);
+  parent.classList.toggle("is-visible", items.length > 0);
+  for (const item of items) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "settings-history__chip";
+    btn.textContent = item.length > 48 ? `${item.slice(0, 45)}…` : item;
+    btn.title = item;
+    btn.addEventListener("click", () => onSelect(item));
+    container.appendChild(btn);
+  }
+}
 
+async function openDirectHome() {
+  if (invoke) {
+    try {
+      await invoke("navigate_main_home", { url: state.settings.homeUrl });
+      return;
+    } catch {
+      // fallback below
+    }
+  }
+  window.location.href = state.settings.homeUrl;
+}
+
+function resetFrame() {
+  void openDirectHome();
+  showExitHint();
+}
+
+async function applyWindowState() {
+  if (!invoke) return;
   try {
-    const normalizedEndpoint = normalizeHttpUrl(endpoint);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REMOTE_CONFIG_TIMEOUT_MS);
-
-    const response = await fetch(normalizedEndpoint, {
-      cache: "no-store",
-      signal: controller.signal,
-      redirect: "follow",
+    const res = await invoke("apply_main_window_state", {
+      alwaysOnTop: !!state.settings.alwaysOnTop,
+      fullscreen: !!state.settings.fullscreen,
     });
-    clearTimeout(timeout);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+    if (res && typeof res === "object") {
+      state.settings.fullscreen = !!res.fullscreen;
+      state.settings.alwaysOnTop = !!res.alwaysOnTop;
     }
-
-    const data = await response.json();
-    const remoteHomeUrl = typeof data?.home_url === "string" ? data.home_url.trim() : "";
-    const remoteUserAgent =
-      typeof data?.user_agent === "string" ? data.user_agent.trim() : "";
-
-    if (!remoteHomeUrl && !remoteUserAgent) {
-      throw new Error("遠端設定缺少 home_url / user_agent");
-    }
-
-    const merged = {
-      ...state.settings,
-      version: typeof data?.version === "number" ? data.version : state.settings.version,
-      config_endpoint: normalizedEndpoint,
-      show_share_options:
-        typeof data?.show_share_options === "boolean"
-          ? data.show_share_options
-          : state.settings.show_share_options,
-      external_app_url:
-        typeof data?.external_app_url === "string"
-          ? data.external_app_url.trim()
-          : state.settings.external_app_url,
-    };
-
-    if (remoteHomeUrl) {
-      merged.home_url = normalizeHttpUrl(remoteHomeUrl);
-      pushHistory("home_url_history", merged.home_url);
-    }
-    if (remoteUserAgent) {
-      merged.user_agent = remoteUserAgent;
-      pushHistory("user_agent_history", remoteUserAgent);
-    }
-
-    state.settings = merged;
-    pushHistory("config_endpoint_history", normalizedEndpoint);
-    state.settings = {
-      ...state.settings,
-      config_endpoint_history: sanitizeHistory(state.settings.config_endpoint_history),
-      home_url_history: sanitizeHistory(state.settings.home_url_history),
-      user_agent_history: sanitizeHistory(state.settings.user_agent_history),
-    };
-
-    syncSettingsToInputs();
-    persistSettings();
-    if (!silent) setSettingsMessage("已抓取並套用遠端設定。", false);
-  } catch (error) {
-    if (!silent) setSettingsMessage(`抓取失敗：${error.message}`, true);
+  } catch {
+    // ignore backend error
   }
 }
 
-function handleHiddenTap() {
-  state.tapCount += 1;
-  if (state.tapResetTimer) clearTimeout(state.tapResetTimer);
+async function updateFsButton() {
+  let fullscreen = !!state.settings.fullscreen;
+  if (invoke) {
+    try {
+      const stateRes = await invoke("get_main_window_state");
+      fullscreen = !!stateRes?.fullscreen;
+      state.settings.alwaysOnTop = !!stateRes?.alwaysOnTop;
+    } catch {
+      // ignore
+    }
+  }
+  state.settings.fullscreen = fullscreen;
+  el.fsToggleLabel.textContent = fullscreen ? "Exit Fullscreen" : "Enter Fullscreen";
+}
 
-  state.tapResetTimer = setTimeout(() => {
-    state.tapCount = 0;
-  }, 1800);
+function syncUiFromSettings() {
+  const { protocol, body } = splitProtocol(state.settings.homeUrl);
+  el.protocol.value = protocol;
+  el.homeInput.value = body;
+  el.userAgentInput.value = state.settings.userAgent || "";
+  el.remoteInput.value = state.settings.remoteConfigUrl || "";
+  el.alwaysOnTop.checked = !!state.settings.alwaysOnTop;
+  el.oskEnabled.checked = !!state.settings.oskEnabled;
+  state.oskEnabled = !!state.settings.oskEnabled;
 
-  if (state.tapCount >= 5) {
-    state.tapCount = 0;
-    openSettingsPanel();
+  renderHistory(el.homeHistory, state.settings.homeUrlHistory, (item) => {
+    const split = splitProtocol(item);
+    el.protocol.value = split.protocol;
+    el.homeInput.value = split.body;
+  });
+  renderHistory(el.uaHistory, state.settings.userAgentHistory, (item) => {
+    el.userAgentInput.value = item;
+  });
+  applyOskEnabledState();
+}
+
+function collectFormSettings() {
+  const homeCandidate = `${el.protocol.value}${el.homeInput.value.trim()}`;
+  const normalizedHome = normalizeHttpUrl(homeCandidate);
+  const remote = el.remoteInput.value.trim() ? normalizeHttpUrl(el.remoteInput.value.trim()) : "";
+
+  state.settings.homeUrl = normalizedHome;
+  state.settings.userAgent = el.userAgentInput.value.trim();
+  state.settings.remoteConfigUrl = remote;
+  state.settings.alwaysOnTop = !!el.alwaysOnTop.checked;
+  state.settings.oskEnabled = !!el.oskEnabled.checked;
+  state.oskEnabled = !!el.oskEnabled.checked;
+
+  pushHistory("homeUrlHistory", state.settings.homeUrl);
+  if (state.settings.userAgent) pushHistory("userAgentHistory", state.settings.userAgent);
+}
+
+function showExitHint() {
+  el.exitHint.classList.add("is-visible");
+  window.clearTimeout(showExitHint.timer);
+  showExitHint.timer = window.setTimeout(() => el.exitHint.classList.remove("is-visible"), 4000);
+}
+
+function openSettings() {
+  const locked = state.settings.hasPassword && !state.unlocked;
+  el.overlay.classList.add("is-visible");
+  el.overlay.setAttribute("aria-hidden", "false");
+  el.overlay.classList.toggle("is-auth", locked);
+  if (locked) {
+    el.authErr.textContent = "";
+    el.authInput.value = "";
+    el.authInput.focus();
   }
 }
 
-function openHomeUrl() {
-  const target = state.settings.home_url?.trim();
-  if (!target) {
-    setSettingsMessage("home_url 尚未設定。", true);
+function handleHashAction() {
+  const hash = String(window.location.hash || "").toLowerCase();
+  if (hash === "#open-settings") {
+    openSettings();
+    history.replaceState(null, "", window.location.pathname + window.location.search);
+  } else if (hash === "#open-home") {
+    openDirectHome();
+  }
+}
+
+function closeSettings() {
+  state.unlocked = false;
+  el.overlay.classList.remove("is-visible", "is-auth");
+  el.overlay.setAttribute("aria-hidden", "true");
+}
+
+async function derivePassword(plain, saltBase64) {
+  const enc = new TextEncoder();
+  const salt = saltBase64
+    ? Uint8Array.from(atob(saltBase64), (c) => c.charCodeAt(0))
+    : crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.importKey("raw", enc.encode(plain), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", hash: "SHA-512", salt, iterations: PASSWORD_ITERATIONS },
+    key,
+    512
+  );
+  const hashBytes = new Uint8Array(bits);
+  const hash = btoa(String.fromCharCode(...hashBytes));
+  const saltOut = btoa(String.fromCharCode(...salt));
+  return { hash, salt: saltOut };
+}
+
+async function verifyPassword(plain) {
+  if (!state.settings.hasPassword) return true;
+  if (!plain) return false;
+  const derived = await derivePassword(plain, state.settings.passwordSalt);
+  return derived.hash === state.settings.passwordHash;
+}
+
+async function onAuthSubmit() {
+  const ok = await verifyPassword(el.authInput.value);
+  if (!ok) {
+    el.authErr.textContent = "Incorrect password.";
     return;
   }
+  state.unlocked = true;
+  el.overlay.classList.remove("is-auth");
+}
+
+async function onUpdatePassword() {
+  const current = el.pwdCurrent.value;
+  const nextPwd = el.pwdNew.value;
+  const confirm = el.pwdConfirm.value;
+
+  if (state.settings.hasPassword) {
+    const validCurrent = await verifyPassword(current);
+    if (!validCurrent) {
+      setPasswordStatus("Current password is incorrect.", "is-error");
+      return;
+    }
+  }
+
+  if (!nextPwd) {
+    state.settings.hasPassword = false;
+    state.settings.passwordHash = "";
+    state.settings.passwordSalt = "";
+    saveSettings();
+    setPasswordStatus("Password protection disabled.", "is-success");
+    return;
+  }
+
+  if (nextPwd !== confirm) {
+    setPasswordStatus("Password confirmation does not match.", "is-error");
+    return;
+  }
+
+  const derived = await derivePassword(nextPwd);
+  state.settings.hasPassword = true;
+  state.settings.passwordHash = derived.hash;
+  state.settings.passwordSalt = derived.salt;
+  saveSettings();
+  setPasswordStatus("Password updated.", "is-success");
+  el.pwdCurrent.value = "";
+  el.pwdNew.value = "";
+  el.pwdConfirm.value = "";
+}
+
+async function fetchRemoteConfig() {
   try {
-    window.location.href = normalizeHttpUrl(target);
-  } catch (error) {
-    setSettingsMessage(`home_url 無效：${error.message}`, true);
+    const url = normalizeHttpUrl(el.remoteInput.value.trim());
+    state.settings.remoteConfigUrl = url;
+    setRemoteStatus("Fetching...", "");
+
+    let data;
+    if (invoke) {
+      data = await invoke("fetch_remote_config", { url });
+    } else {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), REMOTE_CONFIG_TIMEOUT_MS);
+      const res = await fetch(url, { cache: "no-store", signal: controller.signal, redirect: "follow" });
+      window.clearTimeout(timer);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      data = await res.json();
+    }
+
+    const home = typeof data?.home_url === "string" ? data.home_url.trim() : "";
+    const ua = typeof data?.user_agent === "string" ? data.user_agent.trim() : "";
+    if (!home && !ua) throw new Error("Remote config missing home_url and user_agent");
+
+    if (home) state.settings.homeUrl = normalizeHttpUrl(home);
+    if (ua) state.settings.userAgent = ua;
+    if (typeof data?.show_share_options === "boolean") {
+      // reserved
+    }
+
+    pushHistory("homeUrlHistory", state.settings.homeUrl);
+    if (state.settings.userAgent) pushHistory("userAgentHistory", state.settings.userAgent);
+    saveSettings();
+    syncUiFromSettings();
+    await openDirectHome();
+    setRemoteStatus("Remote config applied.", "is-success");
+  } catch (e) {
+    setRemoteStatus(`Fetch failed: ${e.message}`, "is-error");
   }
 }
 
-function onGlobalShortcut(e) {
-  const key = String(e.key || "").toLowerCase();
-  const isSettingsCombo = (e.ctrlKey || e.metaKey) && e.altKey && key === "s";
-  if (isSettingsCombo) {
-    e.preventDefault();
-    openSettingsPanel();
+function applyOskEnabledState() {
+  el.oskOverlay.dataset.enabled = state.oskEnabled ? "true" : "false";
+  if (!state.oskEnabled) hideOsk();
+}
+
+function showOsk() {
+  if (!state.oskEnabled) return;
+  el.oskOverlay.classList.add("is-visible");
+}
+
+function hideOsk() {
+  el.oskOverlay.classList.remove("is-visible");
+  state.oskMinimized = false;
+  el.osk.classList.remove("is-minimized");
+}
+
+function insertTextToActive(text) {
+  const input = state.activeInput;
+  if (!input) return;
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? input.value.length;
+  input.value = `${input.value.slice(0, start)}${text}${input.value.slice(end)}`;
+  const pos = start + text.length;
+  input.setSelectionRange(pos, pos);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function backspaceActive() {
+  const input = state.activeInput;
+  if (!input) return;
+  const start = input.selectionStart ?? 0;
+  const end = input.selectionEnd ?? 0;
+  if (start !== end) {
+    input.value = `${input.value.slice(0, start)}${input.value.slice(end)}`;
+    input.setSelectionRange(start, start);
+  } else if (start > 0) {
+    input.value = `${input.value.slice(0, start - 1)}${input.value.slice(end)}`;
+    input.setSelectionRange(start - 1, start - 1);
+  }
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function bindOskButtons() {
+  el.osk.addEventListener("click", (event) => {
+    const btn = event.target.closest("button");
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const key = btn.dataset.key;
+
+    if (action === "hide") return hideOsk();
+    if (action === "minimize") {
+      state.oskMinimized = !state.oskMinimized;
+      el.osk.classList.toggle("is-minimized", state.oskMinimized);
+      return;
+    }
+    if (action === "backspace") return backspaceActive();
+    if (action === "space") return insertTextToActive(" ");
+    if (action === "enter") return insertTextToActive("\n");
+    if (action === "shift") {
+      state.oskShift = !state.oskShift;
+      return;
+    }
+
+    if (typeof key === "string") {
+      const out = state.oskShift ? key.toUpperCase() : key;
+      insertTextToActive(out);
+      if (state.oskShift) state.oskShift = false;
+    }
+  });
+}
+
+function bindFocusForOsk() {
+  document.addEventListener("focusin", (event) => {
+    const t = event.target;
+    if (!(t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement)) return;
+    state.activeInput = t;
+    if (el.overlay.classList.contains("is-visible")) showOsk();
+  }, true);
+
+  document.addEventListener("focusout", () => {
+    window.setTimeout(() => {
+      const a = document.activeElement;
+      if (!(a instanceof HTMLInputElement || a instanceof HTMLTextAreaElement)) {
+        state.activeInput = null;
+      }
+    }, 100);
+  }, true);
+}
+
+async function onSaveSettings() {
+  try {
+    collectFormSettings();
+    saveSettings();
+    await openDirectHome();
+    applyOskEnabledState();
+    await applyWindowState();
+    await updateFsButton();
+    if (windowLabel === "settings" && appWindow?.close) {
+      await appWindow.close();
+    } else {
+      closeSettings();
+    }
+  } catch (e) {
+    setRemoteStatus(`Save failed: ${e.message}`, "is-error");
   }
 }
 
-window.addEventListener("DOMContentLoaded", () => {
-  greetInputEl = document.querySelector("#greet-input");
-  greetMsgEl = document.querySelector("#greet-msg");
-  appTitleEl = document.querySelector("#app-title");
-  homeUrlLabelEl = document.querySelector("#home-url-label");
+async function toggleFullscreen() {
+  state.settings.fullscreen = !state.settings.fullscreen;
+  await applyWindowState();
+  await updateFsButton();
+}
 
-  loadPersistedSettings();
-  syncSettingsToInputs();
+async function forceQuit() {
+  if (windowLabel === "settings" && appWindow?.close) {
+    await appWindow.close();
+    return;
+  }
+  if (appWindow?.close) {
+    await appWindow.close();
+  } else {
+    window.close();
+  }
+}
 
-  document.querySelector("#greet-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    greet();
+function bindEvents() {
+  window.addEventListener("contextmenu", (e) => e.preventDefault());
+  window.addEventListener("kiosk-open-settings", openSettings);
+  window.addEventListener("kiosk-open-home", () => {
+    void openDirectHome();
   });
 
-  appTitleEl.addEventListener("click", handleHiddenTap);
-  window.addEventListener("keydown", onGlobalShortcut);
-
-  document.querySelector("#fetch-config-btn").addEventListener("click", fetchRemoteConfig);
-  document.querySelector("#save-settings-btn").addEventListener("click", () => {
-    readSettingsFromInputs();
-    persistSettings();
-    syncSettingsToInputs();
-    setSettingsMessage("設定已儲存。", false);
+  el.btnSettings.addEventListener("click", openSettings);
+  el.btnReset.addEventListener("click", resetFrame);
+  el.openDirectBtn.addEventListener("click", () => {
+    void openDirectHome();
   });
-  document.querySelector("#close-settings-btn").addEventListener("click", closeSettingsPanel);
-  document.querySelector("#open-home-btn").addEventListener("click", openHomeUrl);
 
-  // 參考 Electron 版本：啟動時自動嘗試抓取 remote config（失敗不打擾）
-  fetchRemoteConfig({ silent: true });
-});
+  el.authSubmit.addEventListener("click", onAuthSubmit);
+  el.authCancel.addEventListener("click", closeSettings);
+  el.authInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") onAuthSubmit();
+  });
+
+  el.remoteBtn.addEventListener("click", fetchRemoteConfig);
+  el.pwdUpdate.addEventListener("click", onUpdatePassword);
+  el.saveBtn.addEventListener("click", onSaveSettings);
+  el.cancelBtn.addEventListener("click", closeSettings);
+  el.forceExit.addEventListener("click", forceQuit);
+  el.fsToggle.addEventListener("click", toggleFullscreen);
+  el.alwaysOnTop.addEventListener("change", async () => {
+    state.settings.alwaysOnTop = !!el.alwaysOnTop.checked;
+    saveSettings();
+    await applyWindowState();
+  });
+  el.oskEnabled.addEventListener("change", () => {
+    state.oskEnabled = !!el.oskEnabled.checked;
+    state.settings.oskEnabled = state.oskEnabled;
+    saveSettings();
+    applyOskEnabledState();
+  });
+
+  window.addEventListener("keydown", async (e) => {
+    const key = String(e.key || "").toLowerCase();
+    const settingsCombo = (e.ctrlKey || e.metaKey) && e.altKey && key === "s";
+    const exitCombo = (e.ctrlKey || e.metaKey) && e.altKey && key === "q";
+    if (settingsCombo) {
+      e.preventDefault();
+      openSettings();
+      return;
+    }
+    if (exitCombo) {
+      e.preventDefault();
+      await forceQuit();
+      return;
+    }
+    if (key === "escape") {
+      showExitHint();
+    }
+  });
+}
+
+async function boot() {
+  loadSettings();
+  syncUiFromSettings();
+  bindEvents();
+  bindOskButtons();
+  bindFocusForOsk();
+  applyOskEnabledState();
+  await applyWindowState();
+  await updateFsButton();
+
+  const params = new URLSearchParams(window.location.search || "");
+  const mode = String(params.get("mode") || "").toLowerCase();
+  const forceOpenSettings =
+    windowLabel === "settings" ||
+    window.__TAURI_OPEN_SETTINGS__ === true ||
+    mode === "settings";
+  if (forceOpenSettings) {
+    openSettings();
+    window.setTimeout(openSettings, 300);
+  } else {
+    handleHashAction();
+  }
+
+  if (state.settings.remoteConfigUrl) {
+    void fetchRemoteConfig();
+  }
+}
+
+window.addEventListener("DOMContentLoaded", boot);

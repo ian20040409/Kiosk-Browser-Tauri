@@ -10,17 +10,17 @@
   <body>
     <main class="layout">
       <section class="browser-surface">
-        <iframe
-          id="kiosk-frame"
-          src="https://linyounttu.dpdns.org"
-          data-home-url="https://linyounttu.dpdns.org"
-          referrerpolicy="no-referrer"
-        ></iframe>
+        <div class="direct-open-shell" id="direct-open-shell">
+          <p>Direct open mode (no iframe).</p>
+          <button type="button" id="open-direct-btn" class="settings-btn settings-btn--primary">
+            Open Home URL
+          </button>
+        </div>
 
         <div class="exit-hint" role="group" aria-label="Kiosk controls">
           <span class="exit-hint__label">Press <strong>Ctrl + Alt + Q</strong> to exit kiosk mode.</span>
           <button type="button" class="exit-hint__settings" aria-label="Open settings">Settings</button>
-          <button type="button" class="exit-hint__reset" aria-label="Reset browser session">Reset</button>
+          <button type="button" class="exit-hint__reset" aria-label="Open home url">Open</button>
         </div>
 
         <div class="settings-overlay" aria-hidden="true">

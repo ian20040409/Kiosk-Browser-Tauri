@@ -1,7 +1,113 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::Manager;
+use tauri::{WebviewUrl, WebviewWindowBuilder};
+use std::time::Duration;
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowState {
+    fullscreen: bool,
+    always_on_top: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RemoteConfigPayload {
+    #[serde(default)]
+    version: Option<i64>,
+    #[serde(default)]
+    home_url: Option<String>,
+    #[serde(default)]
+    user_agent: Option<String>,
+    #[serde(default)]
+    show_share_options: Option<bool>,
+    #[serde(default)]
+    external_app_url: Option<String>,
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+fn normalize_http_url(raw: &str) -> Result<reqwest::Url, String> {
+    let parsed = reqwest::Url::parse(raw).map_err(|e| format!("Invalid URL: {e}"))?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err("Only http/https allowed".into());
+    }
+    Ok(parsed)
+}
+
+#[tauri::command]
+async fn fetch_remote_config(url: String) -> Result<RemoteConfigPayload, String> {
+    let normalized = normalize_http_url(&url)?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("Client build failed: {e}"))?;
+
+    let response = client
+        .get(normalized)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+
+    response
+        .json::<RemoteConfigPayload>()
+        .await
+        .map_err(|e| format!("Invalid JSON: {e}"))
+}
+
+#[tauri::command]
+fn apply_main_window_state(
+    app: tauri::AppHandle,
+    always_on_top: bool,
+    fullscreen: bool,
+) -> Result<WindowState, String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or("Main window not found")?;
+
+    window
+        .set_always_on_top(always_on_top)
+        .map_err(|e| format!("set_always_on_top failed: {e}"))?;
+    window
+        .set_fullscreen(fullscreen)
+        .map_err(|e| format!("set_fullscreen failed: {e}"))?;
+
+    Ok(WindowState {
+        fullscreen: window.is_fullscreen().unwrap_or(fullscreen),
+        always_on_top,
+    })
+}
+
+#[tauri::command]
+fn get_main_window_state(app: tauri::AppHandle) -> Result<WindowState, String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or("Main window not found")?;
+
+    Ok(WindowState {
+        fullscreen: window.is_fullscreen().unwrap_or(false),
+        always_on_top: window.is_always_on_top().unwrap_or(false),
+    })
+}
+
+#[tauri::command]
+fn navigate_main_home(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let normalized = normalize_http_url(&url)?;
+    let window = app
+        .get_webview_window("main")
+        .ok_or("Main window not found")?;
+
+    window
+        .navigate(normalized)
+        .map_err(|e| format!("navigate failed: {e}"))
 }
 
 fn inject_nikflix_skeleton(window: &tauri::Webview) {
@@ -68,12 +174,78 @@ fn inject_nikflix_skeleton(window: &tauri::Webview) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let open_settings = MenuItemBuilder::with_id("open_settings", "開啟設定").build(app)?;
+            let go_home = MenuItemBuilder::with_id("go_home", "回首頁").build(app)?;
+
+            let tools_submenu = SubmenuBuilder::new(app, "工具")
+                .item(&open_settings)
+                .item(&go_home)
+                .build()?;
+
+                        let menu = MenuBuilder::new(app).item(&tools_submenu).build()?;
+            app.set_menu(menu)?;
+            Ok(())
+        })
+        .on_menu_event(|app, event| {
+            match event.id().as_ref() {
+                "open_settings" => {
+                    if let Some(settings_window) = app.get_webview_window("settings") {
+                        let _ = settings_window.show();
+                        let _ = settings_window.set_focus();
+                        let _ = settings_window.eval(
+                            r#"location.href = 'tauri://localhost/index.html?mode=settings#open-settings';"#,
+                        );
+                    } else {
+                        let _ = WebviewWindowBuilder::new(
+                            app,
+                            "settings",
+                            WebviewUrl::App("index.html?mode=settings#open-settings".into()),
+                        )
+                        .title("設定")
+                        .inner_size(1200.0, 780.0)
+                        .resizable(true)
+                        .initialization_script(
+                            r#"
+window.__TAURI_OPEN_SETTINGS__ = true;
+"#,
+                        )
+                        .build();
+                    }
+                }
+                "go_home" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.eval(
+                            r#"
+(() => {
+  if (location.origin === "tauri://localhost") {
+    window.dispatchEvent(new Event("kiosk-open-home"));
+  } else {
+    location.href = "tauri://localhost/index.html#open-home";
+  }
+})();
+"#,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        })
                 .on_page_load(|window, payload| {
+                    if window.label() == "settings" {
+                        let _ = window.eval("window.dispatchEvent(new Event('kiosk-open-settings'));\nsetTimeout(() => window.dispatchEvent(new Event('kiosk-open-settings')), 300);\n");
+                    }
                         if payload.url().host_str().is_some_and(|host| host.ends_with("netflix.com")) {
                                 inject_nikflix_skeleton(window);
                         }
                 })
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            fetch_remote_config,
+            apply_main_window_state,
+            get_main_window_state,
+            navigate_main_home
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
