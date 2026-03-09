@@ -2,7 +2,14 @@
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::Manager;
 use tauri::{WebviewUrl, WebviewWindowBuilder};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+
+static CACHED_HOME_URL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn cached_home_url() -> &'static Mutex<Option<String>> {
+    CACHED_HOME_URL.get_or_init(|| Mutex::new(None))
+}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,8 +80,10 @@ fn apply_main_window_state(
         .get_webview_window("main")
         .ok_or("Main window not found")?;
 
+    let next_always_on_top = if fullscreen { false } else { always_on_top };
+
     window
-        .set_always_on_top(always_on_top)
+        .set_always_on_top(next_always_on_top)
         .map_err(|e| format!("set_always_on_top failed: {e}"))?;
     window
         .set_fullscreen(fullscreen)
@@ -82,8 +91,26 @@ fn apply_main_window_state(
 
     Ok(WindowState {
         fullscreen: window.is_fullscreen().unwrap_or(fullscreen),
-        always_on_top,
+        always_on_top: window.is_always_on_top().unwrap_or(next_always_on_top),
     })
+}
+
+#[tauri::command]
+fn set_main_menu_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or("Main window not found")?;
+
+    if visible {
+        window
+            .show_menu()
+            .map_err(|e| format!("show_menu failed: {e}"))?;
+    } else {
+        window
+            .hide_menu()
+            .map_err(|e| format!("hide_menu failed: {e}"))?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -110,65 +137,295 @@ fn navigate_main_home(app: tauri::AppHandle, url: String) -> Result<(), String> 
         .map_err(|e| format!("navigate failed: {e}"))
 }
 
-fn inject_nikflix_skeleton(window: &tauri::Webview) {
-        // 先把 extension 的 CSS 注入（僅做骨架樣式）
-        let nikflix_css = include_str!("../../Nikflix-master/chromium/netflix-controller.css");
-        let css_json = serde_json::to_string(nikflix_css).unwrap_or_else(|_| "\"\"".to_string());
+#[tauri::command]
+fn sync_cached_home_url(url: String) -> Result<(), String> {
+    let normalized = normalize_http_url(&url)?;
+    let lock = cached_home_url();
+    let mut guard = lock
+        .lock()
+        .map_err(|_| "cached home url lock poisoned".to_string())?;
+    *guard = Some(normalized.to_string());
+    Ok(())
+}
 
-        let script = format!(
-            r##"
+fn inject_nikflix_full(window: &tauri::Webview) {
+    let nikflix_css = include_str!("../../Nikflix-master/chromium/netflix-controller.css");
+    let nikflix_main = include_str!("../../Nikflix-master/chromium/Main.js");
+    let nikflix_seeker = include_str!("../../Nikflix-master/chromium/netflix-seeker.js");
+    let nikflix_audio = include_str!("../../Nikflix-master/chromium/netflix-audioChange.js");
+    let nikflix_subtitle = include_str!("../../Nikflix-master/chromium/netflix-substitleChange.js");
+
+    let css_json = serde_json::to_string(nikflix_css).unwrap_or_else(|_| "\"\"".to_string());
+    let seeker_json = serde_json::to_string(nikflix_seeker).unwrap_or_else(|_| "\"\"".to_string());
+    let audio_json = serde_json::to_string(nikflix_audio).unwrap_or_else(|_| "\"\"".to_string());
+    let subtitle_json = serde_json::to_string(nikflix_subtitle).unwrap_or_else(|_| "\"\"".to_string());
+
+    let script = format!(
+        r##"
 (() => {{
     if (!location.hostname.endsWith("netflix.com")) return;
-    if (window.__nikflixTauriInjected) return;
-    window.__nikflixTauriInjected = true;
+    if (window.__nikflixTauriInjectedFull) return;
+    window.__nikflixTauriInjectedFull = true;
 
-    // 1) 先做最小可用遮罩，避免限制畫面閃現
-    const earlyStyle = document.createElement("style");
-    earlyStyle.id = "nikflix-tauri-early-style";
-    earlyStyle.textContent = `
-        .nf-modal.interstitial-full-screen,
-        .nf-modal.uma-modal.two-section-uma,
-        .nf-modal.extended-diacritics-language.interstitial-full-screen,
-        .css-1nym653.modal-enter-done {{
-            display: none !important;
+    console.info("[Nikflix/Tauri] Starting full injection...");
+
+    // Polyfill chrome API
+    window.chrome = window.chrome || {{}};
+    window.chrome.runtime = window.chrome.runtime || {{}};
+    window.chrome.runtime.getURL = (path) => path;
+    window.chrome.runtime.onMessage = {{
+        addListener: () => {{}},
+        removeListener: () => {{}}
+    }};
+    window.chrome.storage = window.chrome.storage || {{}};
+    window.chrome.storage.local = {{
+        get: (keys, callback) => {{
+            const res = {{}};
+            if (Array.isArray(keys)) {{
+                keys.forEach(k => res[k] = localStorage.getItem("nikflix_" + k));
+            }} else if (typeof keys === "string") {{
+                res[keys] = localStorage.getItem("nikflix_" + keys);
+            }}
+            if (callback) callback(res);
+        }},
+        set: (items, callback) => {{
+            for (const [k, v] of Object.entries(items)) {{
+                localStorage.setItem("nikflix_" + k, v);
+            }}
+            if (callback) callback();
         }}
-    `;
-    (document.head || document.documentElement).appendChild(earlyStyle);
+    }};
 
-    // 2) 注入 Nikflix 控制器 CSS（目前先作為骨架）
+    // Inject CSS
     const style = document.createElement("style");
-    style.id = "nikflix-tauri-style";
+    style.id = "netflix-controller-styles"; // Use the ID Main.js looks for
     style.textContent = {css_json};
     (document.head || document.documentElement).appendChild(style);
 
-    // 3) 給一個可見的骨架標記，方便確認注入成功
-    const badge = document.createElement("div");
-    badge.id = "nikflix-tauri-badge";
-    badge.textContent = "Nikflix (Tauri Skeleton)";
-    Object.assign(badge.style, {{
-        position: "fixed",
-        top: "16px",
-        right: "16px",
-        zIndex: "2147483647",
-        background: "rgba(229, 9, 20, 0.9)",
-        color: "#fff",
-        padding: "6px 10px",
-        borderRadius: "6px",
-        fontSize: "12px",
-        fontWeight: "700",
-        fontFamily: "Arial, sans-serif",
-        pointerEvents: "none"
-    }});
-    document.body.appendChild(badge);
+    // Mock injectScript to prevent loading external files
+    window.injectScript = (fileName) => {{
+        console.info("[Nikflix/Tauri] Mocking injection of:", fileName);
+    }};
 
-    setTimeout(() => badge.remove(), 2500);
-    console.info("[Nikflix/Tauri] skeleton injected");
+    // Helper to inject script content
+    const injectContent = (content, id) => {{
+        const s = document.createElement("script");
+        s.id = id;
+        s.textContent = content;
+        (document.head || document.documentElement).appendChild(s);
+    }};
+
+    // Inject Seeker, Audio, Subtitle scripts
+    injectContent({seeker_json}, "nikflix-seeker");
+    injectContent({audio_json}, "nikflix-audio");
+    injectContent({subtitle_json}, "nikflix-subtitle");
+
+    // Inject Main.js logic (wrapped in a function to avoid conflicts if needed, but Main.js seems top-level)
+    const mainScript = document.createElement("script");
+    mainScript.id = "nikflix-main";
+    mainScript.textContent = {nikflix_main_json};
+    (document.head || document.documentElement).appendChild(mainScript);
+
+    console.info("[Nikflix/Tauri] Full injection complete");
 }})();
-"##
-        );
+"##,
+        css_json = css_json,
+        seeker_json = seeker_json,
+        audio_json = audio_json,
+        subtitle_json = subtitle_json,
+        nikflix_main_json = serde_json::to_string(nikflix_main).unwrap_or_else(|_| "\"\"".to_string())
+    );
 
-        let _ = window.eval(&script);
+    let _ = window.eval(&script);
 }
+
+const ADBLOCK_SCRIPT: &str = r#"
+(function() {
+    const adDomains = [
+        'doubleclick.net', 'googleadservices.com', 'googlesyndication.com',
+        'taboola.com', 'outbrain.com', 'adnxs.com', 'adtech.de',
+        'advertising.com', 'quantserve.com', 'scorecardresearch.com',
+        'zedo.com', 'criteo.com', 'popads.net', 'adroll.com',
+        'amazon-adsystem.com', 'adnxs.com', 'casalemedia.com', 'rubiconproject.com'
+    ];
+    
+    const originalFetch = window.fetch;
+    window.fetch = function(url, options) {
+        let urlStr = "";
+        if (typeof url === 'string') urlStr = url;
+        else if (url instanceof URL) urlStr = url.href;
+        else if (url instanceof Request) urlStr = url.url;
+
+        if (urlStr && adDomains.some(domain => urlStr.includes(domain))) {
+            console.log('Blocked fetch to ad domain:', urlStr);
+            return Promise.reject(new Error('Blocked by adblock'));
+        }
+        return originalFetch.apply(this, arguments);
+    };
+
+    const originalOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url) {
+        if (typeof url === 'string' && adDomains.some(domain => url.includes(domain))) {
+            console.log('Blocked XHR to ad domain:', url);
+            // We can't easily block it here without affecting the state machine, 
+            // but we can change the URL to something invalid or just abort later.
+            // For now, let's just log and let it fail or use a more robust way.
+        }
+        return originalOpen.apply(this, arguments);
+    };
+    console.info("[AdBlock] Basic adblocker initialized");
+})();
+"#;
+
+const MENU_AUTO_HIDE_SCRIPT: &str = r#"
+(() => {
+    if (window.__lnuMenuAutoHideBound) return;
+    window.__lnuMenuAutoHideBound = true;
+
+    const invoke = window.__TAURI__?.core?.invoke;
+    if (!invoke) return;
+
+    const EDGE_PX = 4;
+    const HIDE_DELAY_MS = 1800;
+    let visible = true;
+    let hideTimer = 0;
+
+    const setVisible = async (next) => {
+        if (visible === next) return;
+        visible = next;
+        try {
+            await invoke("set_main_menu_visible", { visible: next });
+        } catch {
+            // ignore
+        }
+    };
+
+    const scheduleHide = () => {
+        clearTimeout(hideTimer);
+        hideTimer = setTimeout(() => {
+            void setVisible(false);
+        }, HIDE_DELAY_MS);
+    };
+
+    void setVisible(false);
+
+    window.addEventListener("mousemove", (e) => {
+        if ((e.clientY ?? 9999) <= EDGE_PX) {
+            void setVisible(true);
+            scheduleHide();
+        }
+    }, { passive: true });
+
+    window.addEventListener("keydown", (e) => {
+        const k = String(e.key || "");
+        if (k === "Alt" || k === "F10") {
+            void setVisible(true);
+            scheduleHide();
+        }
+    });
+
+    window.addEventListener("blur", () => {
+        clearTimeout(hideTimer);
+        void setVisible(false);
+    });
+})();
+"#;
+
+const CUSTOM_CONTEXT_MENU_SCRIPT: &str = r#"
+(() => {
+    if (window.__lnuCustomContextMenuBound) return;
+    window.__lnuCustomContextMenuBound = true;
+
+    const MENU_ID = "lnu-kiosk-context-menu";
+    const STYLE_ID = "lnu-kiosk-context-style";
+
+    const hideMenu = () => {
+        const menu = document.getElementById(MENU_ID);
+        if (menu) menu.style.display = "none";
+    };
+
+    if (!document.getElementById(STYLE_ID)) {
+        const style = document.createElement("style");
+        style.id = STYLE_ID;
+        style.textContent = `
+#${MENU_ID} {
+    position: fixed;
+    z-index: 2147483647;
+    min-width: 180px;
+    background: rgba(22, 26, 33, 0.96);
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 10px;
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+    padding: 6px;
+    display: none;
+    backdrop-filter: blur(4px);
+}
+#${MENU_ID} .lnu-item {
+    display: block;
+    width: 100%;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: #f8fafc;
+    text-align: left;
+    font-size: 14px;
+    line-height: 1;
+    padding: 11px 12px;
+    cursor: pointer;
+}
+#${MENU_ID} .lnu-item:hover {
+    background: rgba(255, 255, 255, 0.10);
+}
+`;
+        (document.head || document.documentElement).appendChild(style);
+    }
+
+    let menu = document.getElementById(MENU_ID);
+    if (!menu) {
+        menu = document.createElement("div");
+        menu.id = MENU_ID;
+        menu.innerHTML = `
+            <button class="lnu-item" data-action="back">上一頁</button>
+            <button class="lnu-item" data-action="forward">下一頁</button>
+            <button class="lnu-item" data-action="reload">重新整理</button>
+        `;
+        (document.body || document.documentElement).appendChild(menu);
+
+        menu.addEventListener("click", (e) => {
+            const btn = e.target.closest("[data-action]");
+            if (!btn) return;
+            const action = String(btn.getAttribute("data-action") || "");
+            if (action === "back") history.back();
+            if (action === "forward") history.forward();
+            if (action === "reload") location.reload();
+            hideMenu();
+        });
+    }
+
+    document.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const width = menu.offsetWidth || 180;
+        const height = menu.offsetHeight || 140;
+        const maxX = Math.max(8, window.innerWidth - width - 8);
+        const maxY = Math.max(8, window.innerHeight - height - 8);
+        const x = Math.min(Math.max(8, e.clientX), maxX);
+        const y = Math.min(Math.max(8, e.clientY), maxY);
+
+        menu.style.left = `${x}px`;
+        menu.style.top = `${y}px`;
+        menu.style.display = "block";
+    }, true);
+
+    document.addEventListener("click", hideMenu, true);
+    window.addEventListener("blur", hideMenu);
+    window.addEventListener("scroll", hideMenu, true);
+    window.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") hideMenu();
+    });
+})();
+"#;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -183,8 +440,12 @@ pub fn run() {
                 .item(&go_home)
                 .build()?;
 
-                        let menu = MenuBuilder::new(app).item(&tools_submenu).build()?;
+            let menu = MenuBuilder::new(app).item(&tools_submenu).build()?;
             app.set_menu(menu)?;
+
+            if let Some(main_window) = app.get_webview_window("main") {
+                let _ = main_window.hide_menu();
+            }
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -215,36 +476,44 @@ window.__TAURI_OPEN_SETTINGS__ = true;
                 }
                 "go_home" => {
                     if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.eval(
-                            r#"
-(() => {
-  if (location.origin === "tauri://localhost") {
-    window.dispatchEvent(new Event("kiosk-open-home"));
-  } else {
-    location.href = "tauri://localhost/index.html#open-home";
-  }
-})();
-"#,
-                        );
+                        let home_url = cached_home_url()
+                            .lock()
+                            .ok()
+                            .and_then(|guard| guard.clone())
+                            .unwrap_or_else(|| "tauri://localhost/index.html#open-home".to_string());
+
+                        if let Ok(parsed) = reqwest::Url::parse(&home_url) {
+                            let _ = window.navigate(parsed);
+                        }
                     }
                 }
                 _ => {}
             }
         })
-                .on_page_load(|window, payload| {
-                    if window.label() == "settings" {
-                        let _ = window.eval("window.dispatchEvent(new Event('kiosk-open-settings'));\nsetTimeout(() => window.dispatchEvent(new Event('kiosk-open-settings')), 300);\n");
-                    }
-                        if payload.url().host_str().is_some_and(|host| host.ends_with("netflix.com")) {
-                                inject_nikflix_skeleton(window);
-                        }
-                })
+        .on_page_load(|window, payload| {
+            if window.label() == "main" {
+                let _ = window.eval(MENU_AUTO_HIDE_SCRIPT);
+                let _ = window.eval(CUSTOM_CONTEXT_MENU_SCRIPT);
+            }
+
+            // Inject AdBlock on every page
+            let _ = window.eval(ADBLOCK_SCRIPT);
+
+            if window.label() == "settings" {
+                let _ = window.eval("window.dispatchEvent(new Event('kiosk-open-settings'));\nsetTimeout(() => window.dispatchEvent(new Event('kiosk-open-settings')), 300);\n");
+            }
+            if payload.url().host_str().is_some_and(|host| host.ends_with("netflix.com")) {
+                inject_nikflix_full(window);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             fetch_remote_config,
             apply_main_window_state,
             get_main_window_state,
-            navigate_main_home
+            navigate_main_home,
+            sync_cached_home_url,
+            set_main_menu_visible
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

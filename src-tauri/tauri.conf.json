@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "hi-tauri-app",
+  "productName": "LNU Kiosk Browser (Tauri)",
   "version": "0.1.0",
-  "identifier": "com.ian.hi-tauri-app",
+  "identifier": "com.ian.lnukioskbrowser",
   "build": {
     "frontendDist": "../src"
   },
@@ -10,10 +10,12 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "桌面版網站應用程式",
+        "title": "LNU Kiosk Browser (Tauri)",
         "width": 1200,
         "height": 800,
-        "url": "index.html"
+        "url": "index.html",
+        "fullscreen": true,
+        "resizable": true
       }
     ],
     "security": {

@@ -12,9 +12,17 @@
       <section class="browser-surface">
         <div class="direct-open-shell" id="direct-open-shell">
           <p>Direct open mode (no iframe).</p>
-          <button type="button" id="open-direct-btn" class="settings-btn settings-btn--primary">
-            Open Home URL
-          </button>
+          <div class="direct-open-actions">
+            <button type="button" id="open-direct-btn" class="settings-btn settings-btn--primary">
+              Open Home URL
+            </button>
+            <button type="button" id="open-netflix-btn" class="settings-btn settings-btn--danger">
+              Open Netflix
+            </button>
+            <button type="button" id="close-window-btn" class="settings-btn settings-btn--ghost">
+              Close Window
+            </button>
+          </div>
         </div>
 
         <div class="exit-hint" role="group" aria-label="Kiosk controls">
@@ -50,86 +58,74 @@
 
             <div class="settings-dialog__content">
               <div class="settings-grid">
-                <section class="settings-panel settings-panel--wide" aria-labelledby="settings-title">
-                  <label class="settings-field settings-field--url">
+              <div class="settings-panel">
+                <section>
+                  <span class="settings-section-title">Navigation</span>
+                  <label class="settings-field">
                     <span class="settings-field__label">Start URL</span>
                     <div class="settings-url-input">
                       <select id="settings-url-protocol" class="settings-url-input__protocol">
                         <option value="https://">https://</option>
                         <option value="http://">http://</option>
                       </select>
-                      <input id="settings-url-input" class="settings-field__input" type="text" inputmode="url" placeholder="example.com/path" />
+                      <input id="settings-url-input" class="settings-field__input" type="text" placeholder="example.com" />
                     </div>
-                    <span class="settings-field__hint">Only http or https URLs</span>
                   </label>
-                  <div class="settings-history settings-history--url" aria-live="polite">
-                    <p class="settings-history__label">Recent start URLs</p>
-                    <div class="settings-history__chips" id="home-history-chips" role="list"></div>
+                  <div class="settings-history" id="home-history-chips-container">
+                    <div class="settings-history__chips" id="home-history-chips"></div>
                   </div>
+                </section>
 
+                <section>
+                  <span class="settings-section-title">Appearance & Browser</span>
                   <label class="settings-field">
-                    <span class="settings-field__label">Custom user agent</span>
-                    <input id="settings-user-agent" class="settings-field__input" type="text" placeholder="Leave blank to use default" />
+                    <span class="settings-field__label">Custom User Agent</span>
+                    <input id="settings-user-agent" class="settings-field__input" type="text" placeholder="Default browser UA" />
                   </label>
-                  <div class="settings-history settings-history--user-agent" aria-live="polite">
-                    <p class="settings-history__label">Recent user agents</p>
-                    <div class="settings-history__chips" id="user-agent-history-chips" role="list"></div>
+                  <div class="settings-history" id="ua-history-chips-container">
+                    <div class="settings-history__chips" id="user-agent-history-chips"></div>
                   </div>
 
-                  <div class="settings-remote">
-                    <label class="settings-field">
-                      <span class="settings-field__label">Remote config URL</span>
-                      <input id="settings-remote-config-url" class="settings-field__input" type="url" inputmode="url" placeholder="https://worker.linyounttu.dpdns.org/" autocomplete="off" />
-                      <span class="settings-field__hint">Fetches home_url and user_agent.</span>
+                  <div class="settings-window-options">
+                    <label class="settings-switch">
+                      <input id="always-on-top" type="checkbox" />
+                      <span>Always on top</span>
                     </label>
-                    <div class="settings-actions settings-actions--remote">
-                      <button type="button" class="settings-btn settings-btn--primary" id="settings-remote-fetch">Fetch &amp; apply</button>
-                    </div>
-                    <p class="settings-field__hint settings-remote__status" id="remote-config-status" aria-live="polite"></p>
-                  </div>
-
-                  <div class="settings-window">
-                    <div class="settings-switch">
-                      <input id="always-on-top" class="settings-switch__input" type="checkbox" />
-                      <label for="always-on-top" class="settings-switch__label">Always on top</label>
-                    </div>
-                    <div class="settings-switch">
-                      <input id="osk-enabled" class="settings-switch__input" type="checkbox" checked />
-                      <label for="osk-enabled" class="settings-switch__label">Enable on-screen keyboard</label>
-                    </div>
-                    <button type="button" class="settings-btn settings-btn--primary settings-btn--fs-toggle" id="settings-fs-toggle">
-                      <span class="settings-btn__label settings-btn__label--fs">Enter Fullscreen</span>
+                    <label class="settings-switch">
+                      <input id="osk-enabled" type="checkbox" />
+                      <span>On-screen keyboard</span>
+                    </label>
+                    <button type="button" class="settings-btn settings-btn--ghost" id="settings-fs-toggle">
+                      <span class="settings-btn__label--fs">Fullscreen</span>
                     </button>
                   </div>
                 </section>
+              </div>
 
-                <section class="settings-panel settings-panel--security" aria-labelledby="settings-security-title">
-                  <div class="settings-security is-expanded" aria-labelledby="settings-security-title">
-                    <div class="settings-security__title">
-                      <span class="settings-section-title" id="settings-security-title">Security</span>
-                    </div>
-                    <div id="settings-security-content" class="settings-security__content">
-                      <p class="settings-security__hint">Set password to lock this menu. Leave new password blank to remove protection.</p>
-                      <label class="settings-field settings-field--compact">
-                        <span class="settings-field__label">Current password</span>
-                        <input id="settings-password-current" class="settings-field__input" type="password" autocomplete="current-password" />
-                      </label>
-                      <label class="settings-field settings-field--compact">
-                        <span class="settings-field__label">New password</span>
-                        <input id="settings-password-new" class="settings-field__input" type="password" autocomplete="new-password" />
-                      </label>
-                      <label class="settings-field settings-field--compact">
-                        <span class="settings-field__label">Confirm new password</span>
-                        <input id="settings-password-confirm" class="settings-field__input" type="password" autocomplete="new-password" />
-                      </label>
-                      <p class="settings-security__status" id="settings-password-status" role="status" aria-live="polite"></p>
-                      <div class="settings-actions settings-actions--security">
-                        <button type="button" class="settings-btn settings-btn--warn" id="settings-update-password">Update Password</button>
-                      </div>
-                    </div>
+              <div class="settings-panel">
+                <section>
+                  <span class="settings-section-title">Remote Configuration</span>
+                  <label class="settings-field">
+                    <span class="settings-field__label">Config URL</span>
+                    <input id="settings-remote-config-url" class="settings-field__input" type="url" placeholder="https://api.example.com/config" />
+                    <span class="settings-field__hint">Overrides local URL/UA settings.</span>
+                  </label>
+                  <button type="button" class="settings-btn settings-btn--ghost" id="settings-remote-fetch">Fetch Now</button>
+                  <div id="remote-config-status" class="settings-status"></div>
+                </section>
+
+                <section>
+                  <span class="settings-section-title">Security</span>
+                  <div class="settings-field">
+                    <input id="settings-password-current" class="settings-field__input" type="password" placeholder="Current Password" />
+                    <input id="settings-password-new" class="settings-field__input" type="password" placeholder="New Password" />
+                    <input id="settings-password-confirm" class="settings-field__input" type="password" placeholder="Confirm New" />
                   </div>
+                  <button type="button" class="settings-btn settings-btn--warn" id="settings-update-password">Update Security</button>
+                  <div id="settings-password-status" class="settings-status"></div>
                 </section>
               </div>
+            </div>
             </div>
 
             <div class="settings-actions">

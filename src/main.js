@@ -2,6 +2,8 @@ const STORAGE_KEY = "tauri_kiosk_settings_v2";
 const HISTORY_LIMIT = 3;
 const REMOTE_CONFIG_TIMEOUT_MS = 8000;
 const PASSWORD_ITERATIONS = 120000;
+const MENU_EDGE_TRIGGER_PX = 4;
+const MENU_AUTO_HIDE_DELAY_MS = 1800;
 
 const tauriWin = window.__TAURI__?.window;
 const invoke = window.__TAURI__?.core?.invoke;
@@ -14,6 +16,8 @@ const state = {
   oskShift: false,
   oskMinimized: false,
   activeInput: null,
+  menuVisible: true,
+  menuHideTimer: 0,
   settings: {
     homeUrl: "https://linyounttu.dpdns.org",
     userAgent: "",
@@ -31,6 +35,8 @@ const state = {
 
 const el = {
   openDirectBtn: document.querySelector("#open-direct-btn"),
+  openNetflixBtn: document.querySelector("#open-netflix-btn"),
+  closeWindowBtn: document.querySelector("#close-window-btn"),
   exitHint: document.querySelector(".exit-hint"),
   btnSettings: document.querySelector(".exit-hint__settings"),
   btnReset: document.querySelector(".exit-hint__reset"),
@@ -89,13 +95,27 @@ function pushHistory(targetKey, value) {
   state.settings[targetKey] = [v, ...current.filter((x) => x !== v)].slice(0, HISTORY_LIMIT);
 }
 
+function getErrorMessage(e) {
+  if (!e) return "Unknown error";
+  if (typeof e === "string") return e;
+  return e.message || String(e);
+}
+
 function normalizeHttpUrl(raw) {
   if (!raw || typeof raw !== "string") throw new Error("URL is required");
-  const u = new URL(raw.trim());
-  if (u.protocol !== "http:" && u.protocol !== "https:") {
-    throw new Error("Only http/https allowed");
+  const trimmed = raw.trim();
+  try {
+    const u = new URL(trimmed);
+    if (u.protocol !== "http:" && u.protocol !== "https:") {
+      throw new Error("Only http/https allowed");
+    }
+    return u.toString();
+  } catch (e) {
+    if (e.message && e.message.includes("Invalid URL")) {
+      throw new Error(`Invalid URL: ${trimmed}`);
+    }
+    throw e;
   }
-  return u.toString();
 }
 
 function splitProtocol(urlValue) {
@@ -136,9 +156,11 @@ function setPasswordStatus(msg, type = "") {
 
 function renderHistory(container, list, onSelect) {
   container.innerHTML = "";
-  const parent = container.closest(".settings-history");
+  const parent = container.parentElement;
   const items = sanitizeHistory(list);
-  parent.classList.toggle("is-visible", items.length > 0);
+  if (parent) {
+    parent.classList.toggle("is-visible", items.length > 0);
+  }
   for (const item of items) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -167,6 +189,15 @@ function resetFrame() {
   showExitHint();
 }
 
+async function syncCachedHomeUrl() {
+  if (!invoke) return;
+  try {
+    await invoke("sync_cached_home_url", { url: state.settings.homeUrl });
+  } catch {
+    // ignore backend cache sync error
+  }
+}
+
 async function applyWindowState() {
   if (!invoke) return;
   try {
@@ -178,6 +209,7 @@ async function applyWindowState() {
       state.settings.fullscreen = !!res.fullscreen;
       state.settings.alwaysOnTop = !!res.alwaysOnTop;
     }
+    updateAlwaysOnTopAvailability();
   } catch {
     // ignore backend error
   }
@@ -195,7 +227,67 @@ async function updateFsButton() {
     }
   }
   state.settings.fullscreen = fullscreen;
+  if (fullscreen) {
+    state.settings.alwaysOnTop = false;
+  }
+  updateAlwaysOnTopAvailability();
   el.fsToggleLabel.textContent = fullscreen ? "Exit Fullscreen" : "Enter Fullscreen";
+}
+
+function updateAlwaysOnTopAvailability() {
+  const fullscreen = !!state.settings.fullscreen;
+  if (fullscreen) {
+    state.settings.alwaysOnTop = false;
+    el.alwaysOnTop.checked = false;
+  }
+  el.alwaysOnTop.disabled = fullscreen;
+  el.alwaysOnTop.title = fullscreen
+    ? "Always on top is only available when fullscreen is off."
+    : "";
+}
+
+async function setMainMenuVisible(visible) {
+  if (!invoke || windowLabel !== "main") return;
+  if (state.menuVisible === visible) return;
+  state.menuVisible = visible;
+  try {
+    await invoke("set_main_menu_visible", { visible });
+  } catch {
+    // ignore menu visibility errors
+  }
+}
+
+function scheduleMenuAutoHide() {
+  if (windowLabel !== "main") return;
+  window.clearTimeout(state.menuHideTimer);
+  state.menuHideTimer = window.setTimeout(() => {
+    void setMainMenuVisible(false);
+  }, MENU_AUTO_HIDE_DELAY_MS);
+}
+
+function bindMenuAutoHide() {
+  if (!invoke || windowLabel !== "main") return;
+
+  void setMainMenuVisible(false);
+
+  window.addEventListener("mousemove", (e) => {
+    if (e.clientY <= MENU_EDGE_TRIGGER_PX) {
+      void setMainMenuVisible(true);
+      scheduleMenuAutoHide();
+    }
+  });
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Alt" || e.key === "F10") {
+      void setMainMenuVisible(true);
+      scheduleMenuAutoHide();
+    }
+  });
+
+  window.addEventListener("blur", () => {
+    window.clearTimeout(state.menuHideTimer);
+    void setMainMenuVisible(false);
+  });
 }
 
 function syncUiFromSettings() {
@@ -207,6 +299,7 @@ function syncUiFromSettings() {
   el.alwaysOnTop.checked = !!state.settings.alwaysOnTop;
   el.oskEnabled.checked = !!state.settings.oskEnabled;
   state.oskEnabled = !!state.settings.oskEnabled;
+  updateAlwaysOnTopAvailability();
 
   renderHistory(el.homeHistory, state.settings.homeUrlHistory, (item) => {
     const split = splitProtocol(item);
@@ -227,7 +320,7 @@ function collectFormSettings() {
   state.settings.homeUrl = normalizedHome;
   state.settings.userAgent = el.userAgentInput.value.trim();
   state.settings.remoteConfigUrl = remote;
-  state.settings.alwaysOnTop = !!el.alwaysOnTop.checked;
+  state.settings.alwaysOnTop = state.settings.fullscreen ? false : !!el.alwaysOnTop.checked;
   state.settings.oskEnabled = !!el.oskEnabled.checked;
   state.oskEnabled = !!el.oskEnabled.checked;
 
@@ -372,11 +465,12 @@ async function fetchRemoteConfig() {
     pushHistory("homeUrlHistory", state.settings.homeUrl);
     if (state.settings.userAgent) pushHistory("userAgentHistory", state.settings.userAgent);
     saveSettings();
+    await syncCachedHomeUrl();
     syncUiFromSettings();
     await openDirectHome();
     setRemoteStatus("Remote config applied.", "is-success");
   } catch (e) {
-    setRemoteStatus(`Fetch failed: ${e.message}`, "is-error");
+    setRemoteStatus(`Fetch failed: ${getErrorMessage(e)}`, "is-error");
   }
 }
 
@@ -473,6 +567,7 @@ async function onSaveSettings() {
   try {
     collectFormSettings();
     saveSettings();
+    await syncCachedHomeUrl();
     await openDirectHome();
     applyOskEnabledState();
     await applyWindowState();
@@ -483,7 +578,7 @@ async function onSaveSettings() {
       closeSettings();
     }
   } catch (e) {
-    setRemoteStatus(`Save failed: ${e.message}`, "is-error");
+    setRemoteStatus(`Save failed: ${getErrorMessage(e)}`, "is-error");
   }
 }
 
@@ -505,6 +600,14 @@ async function forceQuit() {
   }
 }
 
+async function closeCurrentWindow() {
+  if (appWindow?.close) {
+    await appWindow.close();
+    return;
+  }
+  window.close();
+}
+
 function bindEvents() {
   window.addEventListener("contextmenu", (e) => e.preventDefault());
   window.addEventListener("kiosk-open-settings", openSettings);
@@ -516,6 +619,16 @@ function bindEvents() {
   el.btnReset.addEventListener("click", resetFrame);
   el.openDirectBtn.addEventListener("click", () => {
     void openDirectHome();
+  });
+  el.openNetflixBtn.addEventListener("click", () => {
+    if (invoke) {
+      void invoke("navigate_main_home", { url: "https://www.netflix.com" });
+    } else {
+      window.location.href = "https://www.netflix.com";
+    }
+  });
+  el.closeWindowBtn?.addEventListener("click", () => {
+    void closeCurrentWindow();
   });
 
   el.authSubmit.addEventListener("click", onAuthSubmit);
@@ -531,6 +644,11 @@ function bindEvents() {
   el.forceExit.addEventListener("click", forceQuit);
   el.fsToggle.addEventListener("click", toggleFullscreen);
   el.alwaysOnTop.addEventListener("change", async () => {
+    if (state.settings.fullscreen) {
+      state.settings.alwaysOnTop = false;
+      el.alwaysOnTop.checked = false;
+      return;
+    }
     state.settings.alwaysOnTop = !!el.alwaysOnTop.checked;
     saveSettings();
     await applyWindowState();
@@ -564,8 +682,10 @@ function bindEvents() {
 
 async function boot() {
   loadSettings();
+  await syncCachedHomeUrl();
   syncUiFromSettings();
   bindEvents();
+  bindMenuAutoHide();
   bindOskButtons();
   bindFocusForOsk();
   applyOskEnabledState();
