@@ -109,13 +109,16 @@
                 </section>
 
                 <section>
-                  <span class="settings-section-title">Security</span>
+                  <span class="settings-section-title">Security & Maintenance</span>
                   <div class="settings-field">
                     <input id="settings-password-current" class="settings-field__input" type="password" placeholder="Current Password" />
                     <input id="settings-password-new" class="settings-field__input" type="password" placeholder="New Password" />
                     <input id="settings-password-confirm" class="settings-field__input" type="password" placeholder="Confirm New" />
                   </div>
-                  <button type="button" class="settings-btn settings-btn--warn" id="settings-update-password">Update Security</button>
+                  <div class="settings-actions" style="justify-content: flex-start; gap: 8px; margin-top: 10px;">
+                    <button type="button" class="settings-btn settings-btn--warn" id="settings-update-password">Update Security</button>
+                    <button type="button" class="settings-btn settings-btn--danger" id="settings-clear-data">Clear Cache</button>
+                  </div>
                   <div id="settings-password-status" class="settings-status"></div>
                 </section>
               </div>

@@ -195,6 +195,14 @@ fn force_exit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+#[tauri::command]
+fn clear_browser_data(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.clear_all_browsing_data();
+    }
+    Ok(())
+}
+
 fn inject_nikflix_full(window: &tauri::Webview) {
     let nikflix_css = include_str!("../../Nikflix-master/chromium/netflix-controller.css");
     let nikflix_main = include_str!("../../Nikflix-master/chromium/Main.js");
@@ -724,7 +732,8 @@ pub fn run() {
             set_window_menu_visible,
             open_settings_window,
             close_main_window,
-            force_exit_app
+            force_exit_app,
+            clear_browser_data
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

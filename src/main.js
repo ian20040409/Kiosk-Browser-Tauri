@@ -58,6 +58,7 @@ const el = {
   pwdUpdate: document.querySelector("#settings-update-password"),
   saveBtn: document.querySelector("#settings-save"),
   cancelBtn: document.querySelector("#settings-cancel"),
+  clearDataBtn: document.querySelector("#settings-clear-data"),
   forceExit: document.querySelector("#settings-force-exit"),
   oskOverlay: document.querySelector(".osk-overlay"),
   osk: document.querySelector(".osk"),
@@ -530,8 +531,20 @@ async function onSaveSettings() {
 
 async function toggleFullscreen() {
   state.settings.fullscreen = !state.settings.fullscreen;
+  saveSettings();
   await applyWindowState();
   await updateFsButton();
+}
+
+async function onClearBrowserData() {
+  if (!confirm("Are you sure you want to clear all browser data? This will log you out of websites.")) return;
+  if (!invoke) return;
+  try {
+    await invoke("clear_browser_data");
+    alert("Browser data cleared successfully.");
+  } catch (e) {
+    alert(`Failed to clear data: ${getErrorMessage(e)}`);
+  }
 }
 
 async function forceQuit() {
@@ -593,6 +606,7 @@ function bindEvents() {
   el.pwdUpdate.addEventListener("click", onUpdatePassword);
   el.saveBtn.addEventListener("click", onSaveSettings);
   el.cancelBtn.addEventListener("click", closeSettings);
+  el.clearDataBtn.addEventListener("click", onClearBrowserData);
   el.forceExit.addEventListener("click", forceQuit);
   el.fsToggle.addEventListener("click", toggleFullscreen);
   el.alwaysOnTop.addEventListener("change", async () => {
