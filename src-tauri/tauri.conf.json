@@ -14,7 +14,7 @@
         "width": 1200,
         "height": 800,
         "url": "index.html",
-        "fullscreen": true,
+        "fullscreen": false,
         "resizable": true
       }
     ],

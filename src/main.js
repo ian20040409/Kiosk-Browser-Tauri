@@ -19,7 +19,7 @@ const state = {
     userAgent: "",
     remoteConfigUrl: "https://worker.linyounttu.dpdns.org/",
     alwaysOnTop: true,
-    fullscreen: true,
+    fullscreen: false,
     oskEnabled: true,
     hasPassword: false,
     passwordHash: "",
