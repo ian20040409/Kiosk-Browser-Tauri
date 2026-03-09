@@ -20,7 +20,7 @@ src-tauri/gen/schemas/
 .env
 .env.*
 .env.local
-
+.zip
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -31,3 +31,9 @@ src-tauri/gen/schemas/
 *.njsproj
 *.sln
 *.sw?
+
+electron-kiosk-app-main
+electron-kiosk-app-main.zip
+Nikflix-master
+Nikflix-master.zip
+

@@ -1,39 +1,173 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8" />
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tauri Kiosk by LNU</title>
     <link rel="stylesheet" href="styles.css" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri App</title>
     <script type="module" src="/main.js" defer></script>
   </head>
-
   <body>
-    <main class="container">
-      <h1>Welcome to Tauri</h1>
+    <main class="layout">
+      <section class="browser-surface">
+        <iframe
+          id="kiosk-frame"
+          src="https://linyounttu.dpdns.org"
+          data-home-url="https://linyounttu.dpdns.org"
+          referrerpolicy="no-referrer"
+        ></iframe>
 
-      <div class="row">
-        <a href="https://tauri.app" target="_blank">
-          <img src="/assets/tauri.svg" class="logo tauri" alt="Tauri logo" />
-        </a>
-        <a
-          href="https://developer.mozilla.org/en-US/docs/Web/JavaScript"
-          target="_blank"
-        >
-          <img
-            src="/assets/javascript.svg"
-            class="logo vanilla"
-            alt="JavaScript logo"
-          />
-        </a>
-      </div>
-      <p>Click on the Tauri logo to learn more about the framework</p>
+        <div class="exit-hint" role="group" aria-label="Kiosk controls">
+          <span class="exit-hint__label">Press <strong>Ctrl + Alt + Q</strong> to exit kiosk mode.</span>
+          <button type="button" class="exit-hint__settings" aria-label="Open settings">Settings</button>
+          <button type="button" class="exit-hint__reset" aria-label="Reset browser session">Reset</button>
+        </div>
 
-      <form class="row" id="greet-form">
-        <input id="greet-input" placeholder="Enter a name..." />
-        <button type="submit">Greet</button>
-      </form>
-      <p id="greet-msg"></p>
+        <div class="settings-overlay" aria-hidden="true">
+          <div class="settings-auth-panel" aria-hidden="true">
+            <div class="settings-auth" role="dialog" aria-modal="true" aria-labelledby="settings-auth-title">
+              <h2 id="settings-auth-title" class="settings-title">Unlock Settings</h2>
+              <p class="settings-auth__hint">Enter the password to access kiosk settings.</p>
+              <label class="settings-field settings-field--compact">
+                <span class="settings-field__label">Password</span>
+                <input id="settings-auth-input" type="password" class="settings-field__input settings-auth__input" autocomplete="current-password" />
+              </label>
+              <p id="settings-auth-error" class="settings-auth__error" role="alert" aria-live="assertive"></p>
+              <div class="settings-actions settings-actions--auth">
+                <button type="button" class="settings-btn settings-btn--primary" id="settings-auth-submit">Unlock</button>
+                <button type="button" class="settings-btn settings-btn--ghost" id="settings-auth-cancel">Cancel</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+            <div class="settings-dialog__header">
+              <div>
+                <h2 id="settings-title" class="settings-title">Settings</h2>
+                <p class="settings-subtitle">Kiosk behaviour, remote config and security.</p>
+              </div>
+            </div>
+
+            <div class="settings-dialog__content">
+              <div class="settings-grid">
+                <section class="settings-panel settings-panel--wide" aria-labelledby="settings-title">
+                  <label class="settings-field settings-field--url">
+                    <span class="settings-field__label">Start URL</span>
+                    <div class="settings-url-input">
+                      <select id="settings-url-protocol" class="settings-url-input__protocol">
+                        <option value="https://">https://</option>
+                        <option value="http://">http://</option>
+                      </select>
+                      <input id="settings-url-input" class="settings-field__input" type="text" inputmode="url" placeholder="example.com/path" />
+                    </div>
+                    <span class="settings-field__hint">Only http or https URLs</span>
+                  </label>
+                  <div class="settings-history settings-history--url" aria-live="polite">
+                    <p class="settings-history__label">Recent start URLs</p>
+                    <div class="settings-history__chips" id="home-history-chips" role="list"></div>
+                  </div>
+
+                  <label class="settings-field">
+                    <span class="settings-field__label">Custom user agent</span>
+                    <input id="settings-user-agent" class="settings-field__input" type="text" placeholder="Leave blank to use default" />
+                  </label>
+                  <div class="settings-history settings-history--user-agent" aria-live="polite">
+                    <p class="settings-history__label">Recent user agents</p>
+                    <div class="settings-history__chips" id="user-agent-history-chips" role="list"></div>
+                  </div>
+
+                  <div class="settings-remote">
+                    <label class="settings-field">
+                      <span class="settings-field__label">Remote config URL</span>
+                      <input id="settings-remote-config-url" class="settings-field__input" type="url" inputmode="url" placeholder="https://worker.linyounttu.dpdns.org/" autocomplete="off" />
+                      <span class="settings-field__hint">Fetches home_url and user_agent.</span>
+                    </label>
+                    <div class="settings-actions settings-actions--remote">
+                      <button type="button" class="settings-btn settings-btn--primary" id="settings-remote-fetch">Fetch &amp; apply</button>
+                    </div>
+                    <p class="settings-field__hint settings-remote__status" id="remote-config-status" aria-live="polite"></p>
+                  </div>
+
+                  <div class="settings-window">
+                    <div class="settings-switch">
+                      <input id="always-on-top" class="settings-switch__input" type="checkbox" />
+                      <label for="always-on-top" class="settings-switch__label">Always on top</label>
+                    </div>
+                    <div class="settings-switch">
+                      <input id="osk-enabled" class="settings-switch__input" type="checkbox" checked />
+                      <label for="osk-enabled" class="settings-switch__label">Enable on-screen keyboard</label>
+                    </div>
+                    <button type="button" class="settings-btn settings-btn--primary settings-btn--fs-toggle" id="settings-fs-toggle">
+                      <span class="settings-btn__label settings-btn__label--fs">Enter Fullscreen</span>
+                    </button>
+                  </div>
+                </section>
+
+                <section class="settings-panel settings-panel--security" aria-labelledby="settings-security-title">
+                  <div class="settings-security is-expanded" aria-labelledby="settings-security-title">
+                    <div class="settings-security__title">
+                      <span class="settings-section-title" id="settings-security-title">Security</span>
+                    </div>
+                    <div id="settings-security-content" class="settings-security__content">
+                      <p class="settings-security__hint">Set password to lock this menu. Leave new password blank to remove protection.</p>
+                      <label class="settings-field settings-field--compact">
+                        <span class="settings-field__label">Current password</span>
+                        <input id="settings-password-current" class="settings-field__input" type="password" autocomplete="current-password" />
+                      </label>
+                      <label class="settings-field settings-field--compact">
+                        <span class="settings-field__label">New password</span>
+                        <input id="settings-password-new" class="settings-field__input" type="password" autocomplete="new-password" />
+                      </label>
+                      <label class="settings-field settings-field--compact">
+                        <span class="settings-field__label">Confirm new password</span>
+                        <input id="settings-password-confirm" class="settings-field__input" type="password" autocomplete="new-password" />
+                      </label>
+                      <p class="settings-security__status" id="settings-password-status" role="status" aria-live="polite"></p>
+                      <div class="settings-actions settings-actions--security">
+                        <button type="button" class="settings-btn settings-btn--warn" id="settings-update-password">Update Password</button>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </div>
+
+            <div class="settings-actions">
+              <button type="button" class="settings-btn settings-btn--danger settings-btn--force-exit" id="settings-force-exit">Force Quit</button>
+              <button type="button" class="settings-btn settings-btn--primary settings-save-btn" id="settings-save">Save</button>
+              <button type="button" class="settings-btn settings-btn--ghost settings-cancel-btn" id="settings-cancel">Cancel</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="osk-overlay" aria-hidden="true">
+          <div class="osk" role="group" aria-label="On-screen keyboard">
+            <div class="osk-header" role="presentation">
+              <span class="osk-header__title">On-screen keyboard</span>
+              <div class="osk-header__actions">
+                <button type="button" class="osk-header__btn osk-header__btn--icon" data-action="minimize" aria-label="Minimize keyboard" aria-pressed="false"></button>
+                <button type="button" class="osk-header__btn osk-header__btn--close" data-action="hide" aria-label="Hide keyboard">&times;</button>
+              </div>
+            </div>
+            <div class="osk-row" data-row="num">
+              <button data-key="1">1</button><button data-key="2">2</button><button data-key="3">3</button><button data-key="4">4</button><button data-key="5">5</button><button data-key="6">6</button><button data-key="7">7</button><button data-key="8">8</button><button data-key="9">9</button><button data-key="0">0</button><button data-action="backspace" class="osk-key--wide">⌫</button>
+            </div>
+            <div class="osk-row" data-row="alpha1">
+              <button data-key="a">a</button><button data-key="b">b</button><button data-key="c">c</button><button data-key="d">d</button><button data-key="e">e</button><button data-key="f">f</button><button data-key="g">g</button><button data-key="h">h</button><button data-key="i">i</button><button data-key="j">j</button>
+            </div>
+            <div class="osk-row" data-row="alpha2">
+              <button data-key="k">k</button><button data-key="l">l</button><button data-key="m">m</button><button data-key="n">n</button><button data-key="o">o</button><button data-key="p">p</button><button data-key="q">q</button><button data-key="r">r</button><button data-key="s">s</button><button data-key="t">t</button>
+            </div>
+            <div class="osk-row" data-row="alpha3">
+              <button data-action="shift" class="osk-key--wide">Shift</button><button data-key="u">u</button><button data-key="v">v</button><button data-key="w">w</button><button data-key="x">x</button><button data-key="y">y</button><button data-key="z">z</button><button data-key=".">.</button><button data-key="/">/</button>
+            </div>
+            <div class="osk-row" data-row="space">
+              <button data-action="space" class="osk-key--space">Space</button><button data-action="enter" class="osk-key--enter">Enter</button><button data-action="hide" class="osk-key--wide">Hide</button>
+            </div>
+            <div class="osk-resizer" role="presentation" aria-hidden="true"></div>
+          </div>
+        </div>
+      </section>
     </main>
   </body>
 </html>
