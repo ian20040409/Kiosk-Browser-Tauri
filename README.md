@@ -78,6 +78,3 @@ The app can sync with a worker or JSON endpoint with the following structure:
 }
 ```
 
-### Protocol Handling
-The app uses a custom normalization layer to handle the differences between macOS/Linux (`tauri://`) and Windows (`http://tauri.localhost`) protocols. Use `tauri://localhost/index.html` for internal routing; the backend will handle the translation automatically on Windows.
-
